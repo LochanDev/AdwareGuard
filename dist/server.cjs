@@ -153,7 +153,6 @@ function isKnownLegitimatePublisher(packageName, fileName) {
   const trustedPrefixes = [
     "com.microsoft.",
     "com.google.",
-    "com.android.",
     "com.adobe.",
     "com.facebook.",
     "com.whatsapp",
@@ -173,7 +172,7 @@ function isKnownLegitimatePublisher(packageName, fileName) {
     return true;
   }
   if (lowerFile.includes("word") || lowerFile.includes("excel") || lowerFile.includes("powerpoint") || lowerFile.includes("office") || lowerFile.includes("acrobat") || lowerFile.includes("teams") || lowerFile.includes("outlook") || lowerFile.includes("drive")) {
-    if (lowerPkg.includes("microsoft") || lowerPkg.includes("office") || lowerPkg.includes("google") || lowerPkg.includes("adobe") || lowerPkg.includes("word") || lowerPkg.includes("android")) {
+    if (lowerPkg.includes("microsoft") || lowerPkg.includes("office") || lowerPkg.includes("google") || lowerPkg.includes("adobe") || lowerPkg.includes("word")) {
       return true;
     }
   }
@@ -405,22 +404,41 @@ function analyzeApkFile(filePath, originalName, fileSizeKB) {
   else if (detectedAdSdks.length === 2) adwareScore += 15;
   if (manifestPerms.has("BIND_DEVICE_ADMIN")) {
     if (suspiciousApis.some((a) => a.includes("lockNow") || a.includes("wipeData"))) {
-      malwareScore += 90;
+      malwareScore += 95;
     } else {
-      malwareScore += 45;
+      malwareScore += 65;
     }
   }
-  if (manifestPerms.has("SEND_SMS") && suspiciousApis.some((a) => a.includes("sendTextMessage"))) {
-    malwareScore += 80;
+  if (manifestPerms.has("SEND_SMS")) {
+    if (suspiciousApis.some((a) => a.includes("sendTextMessage"))) {
+      malwareScore += 90;
+    } else {
+      malwareScore += 60;
+    }
   }
   if (manifestPerms.has("INSTALL_PACKAGES") || manifestPerms.has("DELETE_PACKAGES")) {
-    malwareScore += 40;
-  }
-  if (suspiciousApis.some((a) => a.includes("su Shell Execution"))) {
     malwareScore += 65;
   }
-  if (suspiciousApis.some((a) => a.includes("DexClassLoader")) && (manifestPerms.has("SEND_SMS") || manifestPerms.has("BIND_DEVICE_ADMIN") || manifestPerms.has("RECEIVE_BOOT_COMPLETED"))) {
-    malwareScore += 40;
+  if (suspiciousApis.some((a) => a.includes("su Shell Execution"))) {
+    malwareScore += 70;
+  }
+  if (suspiciousApis.some((a) => a.includes("DexClassLoader"))) {
+    if (manifestPerms.has("SEND_SMS") || manifestPerms.has("BIND_DEVICE_ADMIN") || manifestPerms.has("INSTALL_PACKAGES") || manifestPerms.has("REQUEST_INSTALL_PACKAGES")) {
+      malwareScore += 75;
+    }
+  }
+  const spyPermsCount = [
+    manifestPerms.has("READ_CONTACTS"),
+    manifestPerms.has("READ_SMS") || manifestPerms.has("RECEIVE_SMS"),
+    manifestPerms.has("RECORD_AUDIO"),
+    manifestPerms.has("READ_CALL_LOG"),
+    manifestPerms.has("ACCESS_FINE_LOCATION"),
+    manifestPerms.has("READ_PHONE_STATE")
+  ].filter(Boolean).length;
+  if (spyPermsCount >= 3 && suspiciousApis.some((a) => a.includes("getSubscriberId") || a.includes("getDeviceId") || a.includes("DexClassLoader"))) {
+    malwareScore += 70;
+  } else if (spyPermsCount >= 4) {
+    malwareScore += 60;
   }
   if (isTrustedVendor) {
     malwareScore = Math.max(0, malwareScore - 60);

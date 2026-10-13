@@ -66,7 +66,7 @@ VAL_SPLIT = 0.15
 CONFIDENCE_THRESHOLD = 0.75
 
 # Upload Constraints
-MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB
+MAX_CONTENT_LENGTH = 250 * 1024 * 1024  # 250 MB
 ALLOWED_EXTENSIONS = {"apk"}
 UPLOAD_FOLDER = os.path.join(".", "uploads")
 

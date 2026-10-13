@@ -109,20 +109,29 @@ def generate_dataset_csv(cfg, random_seed=42):
         
         if lbl == "Benign":
             # Normal permissions: mostly Medium (22-35) + Low (36-199).
-            # Common: INTERNET (22), NETWORK_STATE (23), STORAGE (26, 27), WAKE_LOCK (33), VIBRATE (32)
-            n_med = np.random.randint(2, 7)
-            med_picks = np.random.choice(range(22, 36), size=n_med, replace=False)
-            n_low = np.random.randint(1, 10)
+            # Supports both lightweight utilities and feature-rich applications (media, mirror, editors)
+            is_rich_app = (np.random.rand() < 0.45)
+            if is_rich_app:
+                # Rich benign apps (media suites, screen mirror, office apps): 15-40 permissions
+                n_med = np.random.randint(4, 10)
+                n_low = np.random.randint(8, 25)
+            else:
+                # Lightweight benign apps: 3-12 permissions
+                n_med = np.random.randint(1, 6)
+                n_low = np.random.randint(1, 8)
+                
+            med_picks = np.random.choice(range(22, 36), size=min(n_med, 14), replace=False)
             low_picks = np.random.choice(range(36, 200), size=n_low, replace=False)
+            
             # Normal apps may request common high risk permissions (e.g. Fine Location 5, Audio 4, Camera 28, Storage)
             high_picks = []
-            if np.random.rand() < 0.40:
-                high_picks = list(np.random.choice([5, 6, 10, 4], size=np.random.randint(1, 3), replace=False))
+            if np.random.rand() < 0.50:
+                high_picks = list(np.random.choice([5, 6, 10, 4, 18], size=np.random.randint(1, 4), replace=False))
             
             active_perms = list(med_picks) + list(low_picks) + high_picks
             
             # Normal APIs: Network & HTTP (0-17) + at most 1 standard ad SDK (65 AdMob)
-            n_net = np.random.randint(2, 6)
+            n_net = np.random.randint(2, 8)
             net_apis = 200 + np.random.choice(range(0, 18), size=n_net, replace=False)
             ad_apis = []
             if np.random.rand() < 0.35:
@@ -132,14 +141,14 @@ def generate_dataset_csv(cfg, random_seed=42):
             meta = [
                 np.random.uniform(0.4, 0.7),
                 np.random.uniform(0.7, 1.0),
-                np.random.uniform(0.1, 0.4),
-                np.random.uniform(0.05, 0.2),
-                np.random.uniform(0.05, 0.2),
-                np.random.uniform(0.0, 0.1),
+                np.random.uniform(0.1, 0.7), # activities count
+                np.random.uniform(0.05, 0.4), # services count
+                np.random.uniform(0.05, 0.4), # receivers count
+                np.random.uniform(0.0, 0.2),  # providers count
                 len(active_perms) / 50.0,
-                1.0 if np.random.rand() > 0.85 else 0.0,
+                1.0 if np.random.rand() > 0.50 else 0.0,
                 0.0, # NO device admin
-                np.random.uniform(0.1, 0.6),
+                np.random.uniform(0.1, 0.9), # app size up to 50MB+
             ]
         elif lbl == "Adware":
             # Overlay, boot receiver, phone state, foreground worker, multiple ad SDKs
@@ -169,21 +178,34 @@ def generate_dataset_csv(cfg, random_seed=42):
                 np.random.uniform(0.2, 0.85),
             ]
         else:  # Malware
-            # Critical dangerous permissions: BIND_DEVICE_ADMIN (17), SEND_SMS (1), RECEIVE_SMS (2),
-            # READ_SMS (3), READ_CONTACTS (0), INSTALL_PACKAGES (19), DELETE_PACKAGES (20), RECORD_AUDIO (4)
-            mal_core = [17, 1, 2, 3, 0, 19, 20, 4, 7, 12, 13]
-            n_core = np.random.randint(4, 9)
-            chosen_core = list(np.random.choice(mal_core, size=n_core, replace=False))
-            extra_med = list(np.random.choice(range(22, 36), size=np.random.randint(3, 7), replace=False))
-            extra_low = list(np.random.choice(range(36, 120), size=np.random.randint(2, 6), replace=False))
-            active_perms = list(set(chosen_core + extra_med + extra_low))
+            archetype = np.random.choice(["ransomware", "sms_fraud", "spyware", "dropper"])
             
-            # Dangerous APIs: DexClassLoader (20, 31), Runtime.exec (22),
-            # SmsManager.sendTextMessage (52), DevicePolicyManager.lockNow (105), wipeData (106), TelephonyManager.getSubscriberId (41)
-            mal_apis = [200 + 20, 200 + 31, 200 + 22, 200 + 52, 200 + 105, 200 + 106, 200 + 41]
-            n_mal_apis = np.random.randint(3, 7)
-            chosen_mal_apis = list(np.random.choice(mal_apis, size=n_mal_apis, replace=False))
+            if archetype == "ransomware":
+                # Ransomware: BIND_DEVICE_ADMIN (17), SYSTEM_ALERT_WINDOW (12), STORAGE (26, 27)
+                chosen_core = [17, 12, 18, 10]
+                chosen_mal_apis = [200 + 105, 200 + 106, 200 + 99] # lockNow, wipeData, addView
+                has_admin = 1.0
+            elif archetype == "sms_fraud":
+                # SMS Toll Fraud: SEND_SMS (1), RECEIVE_SMS (2), READ_SMS (3), PHONE_STATE (10)
+                chosen_core = [1, 2, 3, 10, 18]
+                chosen_mal_apis = [200 + 52, 200 + 20, 200 + 40] # sendTextMessage, DexClassLoader, getDeviceId
+                has_admin = 0.0
+            elif archetype == "spyware":
+                # Spyware / Info-Stealer: CONTACTS (0), SMS (3), AUDIO (4), LOCATION (5), CALL_LOG (7), PHONE_STATE (10)
+                chosen_core = [0, 3, 4, 5, 7, 10]
+                chosen_mal_apis = [200 + 40, 200 + 41, 200 + 20] # getDeviceId, getSubscriberId, DexClassLoader
+                has_admin = 0.0
+            else: # dropper
+                # Dropper / Root Exploit: INSTALL_PACKAGES (19), DELETE_PACKAGES (20), REQUEST_INSTALL (35), BOOT (18)
+                chosen_core = [19, 20, 18, 12]
+                chosen_mal_apis = [200 + 20, 200 + 31, 200 + 22] # DexClassLoader, InMemoryDex, Runtime.exec
+                has_admin = 1.0 if np.random.rand() > 0.4 else 0.0
+                
+            extra_med = list(np.random.choice(range(22, 36), size=np.random.randint(2, 6), replace=False))
+            extra_low = list(np.random.choice(range(36, 120), size=np.random.randint(1, 6), replace=False))
+            active_perms = list(set(chosen_core + extra_med + extra_low))
             active_apis = list(set(chosen_mal_apis))
+            
             meta = [
                 np.random.uniform(0.2, 0.5),
                 np.random.uniform(0.5, 0.8),
@@ -193,7 +215,7 @@ def generate_dataset_csv(cfg, random_seed=42):
                 np.random.uniform(0.05, 0.3),
                 len(active_perms) / 50.0,
                 1.0,
-                1.0 if np.random.rand() > 0.35 else 0.0,
+                has_admin,
                 np.random.uniform(0.05, 0.7),
             ]
             

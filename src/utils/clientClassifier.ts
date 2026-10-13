@@ -56,7 +56,6 @@ function isKnownLegitimatePublisher(packageName: string, fileName: string): bool
   const trustedPrefixes = [
     "com.microsoft.",
     "com.google.",
-    "com.android.",
     "com.adobe.",
     "com.facebook.",
     "com.whatsapp",
@@ -209,19 +208,41 @@ export async function analyzeApkClientSide(file: File): Promise<ScanResult> {
   }
 
   if (foundPerms.has("BIND_DEVICE_ADMIN") && detectedApis.has("DevicePolicyManager.lockNow (Device Lockout Mechanism)")) {
-    malwareScore += 90;
+    malwareScore += 95;
   } else if (foundPerms.has("BIND_DEVICE_ADMIN")) {
-    malwareScore += 45;
+    malwareScore += 65;
   }
 
   if (foundPerms.has("SEND_SMS") && detectedApis.has("SmsManager.sendTextMessage (Premium SMS Fraud)")) {
-    malwareScore += 80;
+    malwareScore += 90;
   } else if (foundPerms.has("SEND_SMS")) {
-    malwareScore += 40;
+    malwareScore += 60;
   }
 
-  if (detectedApis.has("DexClassLoader (Dynamic Code Loading / Dropper)") && (foundPerms.has("SEND_SMS") || foundPerms.has("BIND_DEVICE_ADMIN"))) {
-    malwareScore += 40;
+  if (foundPerms.has("INSTALL_PACKAGES") || foundPerms.has("DELETE_PACKAGES")) {
+    malwareScore += 65;
+  }
+
+  if (detectedApis.has("DexClassLoader (Dynamic Code Loading / Dropper)")) {
+    if (foundPerms.has("SEND_SMS") || foundPerms.has("BIND_DEVICE_ADMIN") || foundPerms.has("INSTALL_PACKAGES") || foundPerms.has("REQUEST_INSTALL_PACKAGES")) {
+      malwareScore += 75;
+    }
+  }
+
+  // Spyware / surveillance check
+  const spyPermsCount = [
+    foundPerms.has("READ_CONTACTS"),
+    foundPerms.has("READ_SMS") || foundPerms.has("RECEIVE_SMS"),
+    foundPerms.has("RECORD_AUDIO"),
+    foundPerms.has("READ_CALL_LOG"),
+    foundPerms.has("ACCESS_FINE_LOCATION"),
+    foundPerms.has("READ_PHONE_STATE"),
+  ].filter(Boolean).length;
+
+  if (spyPermsCount >= 3 && (detectedApis.has("TelephonyManager.getSubscriberId (IMSI Exfiltration)") || detectedApis.has("TelephonyManager.getDeviceId (IMEI/Device Fingerprinting)"))) {
+    malwareScore += 70;
+  } else if (spyPermsCount >= 4) {
+    malwareScore += 60;
   }
 
   if (isTrustedVendor) {

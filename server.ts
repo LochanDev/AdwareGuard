@@ -152,7 +152,6 @@ function isKnownLegitimatePublisher(packageName: string, fileName: string): bool
   const trustedPrefixes = [
     "com.microsoft.",
     "com.google.",
-    "com.android.",
     "com.adobe.",
     "com.facebook.",
     "com.whatsapp",
@@ -189,8 +188,7 @@ function isKnownLegitimatePublisher(packageName: string, fileName: string): bool
       lowerPkg.includes("office") ||
       lowerPkg.includes("google") ||
       lowerPkg.includes("adobe") ||
-      lowerPkg.includes("word") ||
-      lowerPkg.includes("android")
+      lowerPkg.includes("word")
     ) {
       return true;
     }
@@ -461,24 +459,72 @@ function analyzeApkFile(filePath: string, originalName: string, fileSizeKB: numb
   else if (detectedAdSdks.length === 2) adwareScore += 15;
 
   // 2. Malware Score
+  // Ransomware / Device Locker
   if (manifestPerms.has("BIND_DEVICE_ADMIN")) {
     if (suspiciousApis.some(a => a.includes("lockNow") || a.includes("wipeData"))) {
-      malwareScore += 90; // Definite ransomware
+      malwareScore += 95; // Definite ransomware
     } else {
-      malwareScore += 45; // High risk device admin
+      malwareScore += 65; // High risk device admin
     }
   }
-  if (manifestPerms.has("SEND_SMS") && suspiciousApis.some(a => a.includes("sendTextMessage"))) {
-    malwareScore += 80; // Premium SMS fraud
+  // Toll fraud / Premium SMS
+  if (manifestPerms.has("SEND_SMS")) {
+    if (suspiciousApis.some(a => a.includes("sendTextMessage"))) {
+      malwareScore += 90; // Premium SMS fraud
+    } else {
+      malwareScore += 60;
+    }
   }
+  // Silent app installer / persistence
   if (manifestPerms.has("INSTALL_PACKAGES") || manifestPerms.has("DELETE_PACKAGES")) {
-    malwareScore += 40;
+    malwareScore += 65;
   }
+  // Root exploit
   if (suspiciousApis.some(a => a.includes("su Shell Execution"))) {
-    malwareScore += 65; // Root exploit
+    malwareScore += 70;
   }
-  if (suspiciousApis.some(a => a.includes("DexClassLoader")) && (manifestPerms.has("SEND_SMS") || manifestPerms.has("BIND_DEVICE_ADMIN") || manifestPerms.has("RECEIVE_BOOT_COMPLETED"))) {
-    malwareScore += 40; // Dropper signature
+  // Dynamic code loading / Dropper
+  if (suspiciousApis.some(a => a.includes("DexClassLoader"))) {
+    if (manifestPerms.has("SEND_SMS") || manifestPerms.has("BIND_DEVICE_ADMIN") || manifestPerms.has("INSTALL_PACKAGES") || manifestPerms.has("REQUEST_INSTALL_PACKAGES")) {
+      malwareScore += 75; // Confirmed dropper
+    }
+  }
+  // Spyware / Surveillance (Contacts + SMS + Audio/Camera + Location exfiltration)
+  const spyPermsCount = [
+    manifestPerms.has("READ_CONTACTS"),
+    manifestPerms.has("READ_SMS") || manifestPerms.has("RECEIVE_SMS"),
+    manifestPerms.has("RECORD_AUDIO"),
+    manifestPerms.has("READ_CALL_LOG"),
+    manifestPerms.has("ACCESS_FINE_LOCATION"),
+    manifestPerms.has("READ_PHONE_STATE"),
+  ].filter(Boolean).length;
+
+  if (spyPermsCount >= 3 && suspiciousApis.some(a => a.includes("getSubscriberId") || a.includes("getDeviceId") || a.includes("DexClassLoader"))) {
+    malwareScore += 70; // Spyware / Info-Stealer signature
+  } else if (spyPermsCount >= 4) {
+    malwareScore += 60; // Critical surveillance permissions combo
+  } else if (spyPermsCount >= 2) {
+    malwareScore += 35; // Moderate surveillance profile
+  }
+
+  // Aggressive adware / PUP: High-risk overlay + boot persistence combo (no Ad SDK required)
+  // Grounded in [1]: SYSTEM_ALERT_WINDOW + RECEIVE_BOOT_COMPLETED is a canonical adware fingerprint
+  if (manifestPerms.has("SYSTEM_ALERT_WINDOW") && manifestPerms.has("RECEIVE_BOOT_COMPLETED")) {
+    if (manifestPerms.has("READ_PHONE_STATE") || manifestPerms.has("READ_CONTACTS") || manifestPerms.has("ACCESS_FINE_LOCATION")) {
+      // Overlay + boot-persist + data-harvesting = confirmed adware/spyware PUP
+      adwareScore += 55;
+      malwareScore += 30;
+    } else {
+      adwareScore += 35;
+    }
+  } else if (manifestPerms.has("SYSTEM_ALERT_WINDOW") && manifestPerms.has("READ_PHONE_STATE")) {
+    adwareScore += 30; // Overlay + device fingerprinting
+  }
+
+  // High-risk permission density check: 3+ HIGH-risk permissions without a known SDK = suspicious
+  if (highCount >= 3 && detectedAdSdks.length === 0 && !isTrustedVendor) {
+    // Unknown app with multiple dangerous permissions but no recognized SDK = red flag
+    adwareScore += (highCount - 2) * 12;
   }
 
   // Trusted vendor dampener: legitimate software (like MS Word, Excel, Adobe Acrobat)

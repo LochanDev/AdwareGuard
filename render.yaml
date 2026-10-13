@@ -1,5 +1,14 @@
-﻿{
-  "buildCommand": "npm run build",
-  "startCommand": "npm start",
-  "nodeVersion": "20"
-}
+services:
+  - type: web
+    name: remix-adwareguard
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000

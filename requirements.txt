@@ -10,3 +10,4 @@ matplotlib==3.7.2
 seaborn==0.12.2
 tqdm==4.65.0
 werkzeug==3.0.1
+gunicorn>=21.2.0

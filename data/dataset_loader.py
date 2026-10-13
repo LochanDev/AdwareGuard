@@ -209,14 +209,14 @@ class AdwareDatasetLoader:
         print(f"Before preprocessing : {raw_count} records")
         print(f"After dedup + clean  : {cleaned_count} records")
 
-        # Class balancing via SMOTE (or Stratified Resampling fallback)
+        # Class balancing via Stratified Over-Sampling / SMOTE
         try:
-            from imblearn.over_sampling import SMOTE
-            smote = SMOTE(random_state=self.random_seed)
-            X_balanced, y_balanced = smote.fit_resample(X, y)
+            from imblearn.over_sampling import RandomOverSampler
+            ros = RandomOverSampler(random_state=self.random_seed)
+            X_balanced, y_balanced = ros.fit_resample(X, y)
         except Exception:
             # High-performance stratified synthetic balancing fallback
-            max_per_class = 73109
+            max_per_class = int(max(np.bincount(y)))
             X_bal_list, y_bal_list = [], []
             for cls_idx in range(config.NUM_CLASSES):
                 idx = np.where(y == cls_idx)[0]

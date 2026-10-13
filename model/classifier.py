@@ -60,14 +60,14 @@ class AdwareGuardModel:
             activation='relu',
             solver='adam',
             alpha=0.001,
-            batch_size=64,
+            batch_size=256,
             learning_rate='adaptive',
-            max_iter=100,
+            max_iter=30,
             early_stopping=True,
             validation_fraction=0.1,
-            n_iter_no_change=10,
+            n_iter_no_change=5,
             random_state=config.RANDOM_SEED,
-            verbose=False
+            verbose=True
         )
         self.classes_ = np.array([0, 1, 2])
         self.is_fitted = False

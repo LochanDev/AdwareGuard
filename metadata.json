@@ -1,5 +1,5 @@
 {
-  "name": "Remix AdwareGuard",
+  "name": "AdwareGuard",
   "description": "A Hybrid Multimodal Transformer-Based Android Adware Detection System with Explainability and Dark Mode.",
   "requestFramePermissions": [],
   "majorCapabilities": [

@@ -59,6 +59,12 @@ export default function App() {
           method: "POST",
           body: formData,
         });
+        if (!response.ok && response.status === 404) {
+          response = await fetch("/scan", {
+            method: "POST",
+            body: formData,
+          });
+        }
       } catch (_apiErr) {
         response = await fetch("/scan", {
           method: "POST",

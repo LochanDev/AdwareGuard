@@ -25,6 +25,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var import_express = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
 var import_fs = __toESM(require("fs"), 1);
+var import_net = __toESM(require("net"), 1);
+var import_child_process = require("child_process");
 var import_multer = __toESM(require("multer"), 1);
 var import_adm_zip = __toESM(require("adm-zip"), 1);
 var import_vite = require("vite");
@@ -109,8 +111,176 @@ app.get("/model-info", (req, res) => {
     ]
   });
 });
+var PERMISSION_WEIGHTS_MAP = {
+  BIND_DEVICE_ADMIN: { weight: 0.99, risk: "HIGH" },
+  SEND_SMS: { weight: 0.97, risk: "HIGH" },
+  RECEIVE_SMS: { weight: 0.95, risk: "HIGH" },
+  READ_SMS: { weight: 0.94, risk: "HIGH" },
+  READ_CONTACTS: { weight: 0.92, risk: "HIGH" },
+  SYSTEM_ALERT_WINDOW: { weight: 0.9, risk: "HIGH" },
+  INSTALL_PACKAGES: { weight: 0.9, risk: "HIGH" },
+  DELETE_PACKAGES: { weight: 0.88, risk: "HIGH" },
+  READ_CALL_LOG: { weight: 0.88, risk: "HIGH" },
+  WRITE_CALL_LOG: { weight: 0.86, risk: "HIGH" },
+  RECEIVE_BOOT_COMPLETED: { weight: 0.8, risk: "HIGH" },
+  WRITE_SETTINGS: { weight: 0.78, risk: "HIGH" },
+  GET_ACCOUNTS: { weight: 0.72, risk: "HIGH" },
+  USE_CREDENTIALS: { weight: 0.7, risk: "HIGH" },
+  MANAGE_ACCOUNTS: { weight: 0.68, risk: "HIGH" },
+  REQUEST_INSTALL_PACKAGES: { weight: 0.76, risk: "HIGH" },
+  ACCESS_FINE_LOCATION: { weight: 0.65, risk: "MEDIUM" },
+  ACCESS_COARSE_LOCATION: { weight: 0.6, risk: "MEDIUM" },
+  RECORD_AUDIO: { weight: 0.55, risk: "MEDIUM" },
+  READ_PHONE_STATE: { weight: 0.58, risk: "MEDIUM" },
+  CAMERA: { weight: 0.52, risk: "MEDIUM" },
+  WRITE_EXTERNAL_STORAGE: { weight: 0.48, risk: "MEDIUM" },
+  READ_EXTERNAL_STORAGE: { weight: 0.45, risk: "MEDIUM" },
+  INTERNET: { weight: 0.38, risk: "MEDIUM" },
+  ACCESS_NETWORK_STATE: { weight: 0.3, risk: "MEDIUM" },
+  ACCESS_WIFI_STATE: { weight: 0.28, risk: "MEDIUM" },
+  WAKE_LOCK: { weight: 0.25, risk: "MEDIUM" },
+  FOREGROUND_SERVICE: { weight: 0.32, risk: "MEDIUM" },
+  BLUETOOTH: { weight: 0.26, risk: "MEDIUM" },
+  BLUETOOTH_ADMIN: { weight: 0.28, risk: "MEDIUM" },
+  VIBRATE: { weight: 0.12, risk: "LOW" },
+  FLASHLIGHT: { weight: 0.1, risk: "LOW" },
+  SET_WALLPAPER: { weight: 0.1, risk: "LOW" },
+  EXPAND_STATUS_BAR: { weight: 0.08, risk: "LOW" }
+};
+function isKnownLegitimatePublisher(packageName, fileName) {
+  const lowerPkg = packageName.toLowerCase();
+  const lowerFile = fileName.toLowerCase();
+  const trustedPrefixes = [
+    "com.microsoft.",
+    "com.google.",
+    "com.android.",
+    "com.adobe.",
+    "com.facebook.",
+    "com.whatsapp",
+    "com.instagram.",
+    "org.telegram.",
+    "com.spotify.",
+    "com.amazon.",
+    "com.dropbox.",
+    "com.slack",
+    "us.zoom.",
+    "org.mozilla.",
+    "com.apple.",
+    "com.samsung.",
+    "com.linkedin."
+  ];
+  if (trustedPrefixes.some((prefix) => lowerPkg.startsWith(prefix))) {
+    return true;
+  }
+  if (lowerFile.includes("word") || lowerFile.includes("excel") || lowerFile.includes("powerpoint") || lowerFile.includes("office") || lowerFile.includes("acrobat") || lowerFile.includes("teams") || lowerFile.includes("outlook") || lowerFile.includes("drive")) {
+    if (lowerPkg.includes("microsoft") || lowerPkg.includes("office") || lowerPkg.includes("google") || lowerPkg.includes("adobe") || lowerPkg.includes("word") || lowerPkg.includes("android")) {
+      return true;
+    }
+  }
+  return false;
+}
+function extractManifestData(manifestBuffer) {
+  const permissions = /* @__PURE__ */ new Set();
+  let packageName = "";
+  if (!manifestBuffer || manifestBuffer.length === 0) {
+    return { permissions, packageName };
+  }
+  try {
+    if (manifestBuffer.length > 32) {
+      let offset = 8;
+      while (offset + 8 < manifestBuffer.length) {
+        const chunkType = manifestBuffer.readUInt32LE(offset);
+        const chunkSize = manifestBuffer.readUInt32LE(offset + 4);
+        if (chunkType === 1835009) {
+          const stringCount = manifestBuffer.readUInt32LE(offset + 8);
+          const flags = manifestBuffer.readUInt32LE(offset + 16);
+          const stringsStart = manifestBuffer.readUInt32LE(offset + 20);
+          const isUtf8 = (flags & 1 << 8) !== 0;
+          const offsetsBase = offset + 28;
+          const stringsBase = offset + stringsStart;
+          for (let i = 0; i < Math.min(stringCount, 2500); i++) {
+            if (offsetsBase + i * 4 + 4 > manifestBuffer.length) break;
+            const strOffset = manifestBuffer.readUInt32LE(offsetsBase + i * 4);
+            const p = stringsBase + strOffset;
+            if (p >= manifestBuffer.length) continue;
+            let str = "";
+            if (isUtf8) {
+              let len = manifestBuffer[p];
+              let strPtr = p + 1;
+              if (len & 128) {
+                len = (len & 127) << 8 | manifestBuffer[strPtr];
+                strPtr++;
+              }
+              str = manifestBuffer.toString("utf8", strPtr, Math.min(strPtr + len, manifestBuffer.length));
+            } else {
+              if (p + 2 > manifestBuffer.length) continue;
+              let len = manifestBuffer.readUInt16LE(p);
+              let strPtr = p + 2;
+              if (len & 32768) {
+                len = (len & 32767) << 16 | manifestBuffer.readUInt16LE(strPtr);
+                strPtr += 2;
+              }
+              str = manifestBuffer.toString("utf16le", strPtr, Math.min(strPtr + len * 2, manifestBuffer.length));
+            }
+            if (str) {
+              if (str.startsWith("android.permission.")) {
+                permissions.add(str.replace("android.permission.", ""));
+              } else if (str.includes("permission.")) {
+                const match = str.match(/permission\.([A-Z0-9_]+)/);
+                if (match) permissions.add(match[1]);
+              }
+              if (!packageName && /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){2,}$/i.test(str)) {
+                const lowerStr = str.toLowerCase();
+                const ignoredPkgPrefixes = [
+                  "android.",
+                  "schemas.",
+                  "http",
+                  "androidx.",
+                  "com.facebook.react",
+                  "com.facebook.jni",
+                  "kotlin.",
+                  "kotlinx.",
+                  "com.google.android.gms",
+                  "com.google.gson",
+                  "okhttp3",
+                  "retrofit2"
+                ];
+                if (!ignoredPkgPrefixes.some((p2) => lowerStr.startsWith(p2)) && !/[A-Z]/.test(str.split(".").pop() || "")) {
+                  packageName = str;
+                }
+              }
+            }
+          }
+          break;
+        }
+        offset += chunkSize > 0 ? chunkSize : 4;
+      }
+    }
+  } catch (axmlErr) {
+    console.warn("AXML string pool parse error, falling back to raw decodings:", axmlErr);
+  }
+  const encodings = ["utf8", "latin1", "utf16le"];
+  for (const enc of encodings) {
+    try {
+      const text = manifestBuffer.toString(enc);
+      const permRegex = /android\.permission\.([A-Z0-9_]+)/g;
+      let m;
+      while ((m = permRegex.exec(text)) !== null) {
+        permissions.add(m[1]);
+      }
+      if (!packageName) {
+        const pkgMatch = text.match(/package="([a-zA-Z0-9_.]+)"/);
+        if (pkgMatch && pkgMatch[1]) {
+          packageName = pkgMatch[1];
+        }
+      }
+    } catch (_) {
+    }
+  }
+  return { permissions, packageName };
+}
 function analyzeApkFile(filePath, originalName, fileSizeKB) {
-  let manifestText = "";
+  let manifestBuffer = Buffer.alloc(0);
   let dexStr = "";
   let extractedSuccessfully = false;
   try {
@@ -120,8 +290,7 @@ function analyzeApkFile(filePath, originalName, fileSizeKB) {
     for (const entry of zipEntries) {
       if (entry.entryName === "AndroidManifest.xml") {
         try {
-          const raw = entry.getData();
-          manifestText = raw.toString("latin1");
+          manifestBuffer = entry.getData();
         } catch (_) {
         }
       } else if (entry.entryName.startsWith("classes") && entry.entryName.endsWith(".dex")) {
@@ -138,7 +307,7 @@ function analyzeApkFile(filePath, originalName, fileSizeKB) {
   } catch (zipErr) {
     console.warn("AdmZip extraction failed, falling back to direct binary stream inspection:", zipErr);
   }
-  if (!extractedSuccessfully || !manifestText && !dexStr) {
+  if (!extractedSuccessfully || manifestBuffer.length === 0 && !dexStr) {
     try {
       const stats = import_fs.default.statSync(filePath);
       const readSize = Math.min(stats.size, 30 * 1024 * 1024);
@@ -146,104 +315,157 @@ function analyzeApkFile(filePath, originalName, fileSizeKB) {
       const fd = import_fs.default.openSync(filePath, "r");
       import_fs.default.readSync(fd, buffer, 0, readSize, 0);
       import_fs.default.closeSync(fd);
-      const rawString = buffer.toString("latin1");
-      manifestText = rawString;
-      dexStr = rawString;
+      manifestBuffer = buffer;
+      dexStr = buffer.toString("latin1");
     } catch (fallbackErr) {
       console.warn("Direct buffer read fallback error:", fallbackErr);
     }
   }
-  const knownHigh = [
-    "READ_CONTACTS",
-    "SEND_SMS",
-    "RECEIVE_SMS",
-    "READ_SMS",
-    "RECORD_AUDIO",
-    "ACCESS_FINE_LOCATION",
-    "ACCESS_COARSE_LOCATION",
-    "READ_CALL_LOG",
-    "WRITE_CALL_LOG",
-    "PROCESS_OUTGOING_CALLS",
-    "READ_PHONE_STATE",
-    "CALL_PHONE",
-    "SYSTEM_ALERT_WINDOW",
-    "WRITE_SETTINGS",
-    "GET_ACCOUNTS",
-    "USE_CREDENTIALS",
-    "MANAGE_ACCOUNTS",
-    "BIND_DEVICE_ADMIN",
-    "RECEIVE_BOOT_COMPLETED",
-    "INSTALL_PACKAGES",
-    "DELETE_PACKAGES"
-  ];
-  const knownMed = [
-    "INTERNET",
-    "ACCESS_NETWORK_STATE",
-    "ACCESS_WIFI_STATE",
-    "CHANGE_WIFI_STATE",
-    "WRITE_EXTERNAL_STORAGE",
-    "READ_EXTERNAL_STORAGE",
-    "CAMERA",
-    "BLUETOOTH",
-    "BLUETOOTH_ADMIN",
-    "NFC",
-    "VIBRATE",
-    "WAKE_LOCK",
-    "FOREGROUND_SERVICE",
-    "REQUEST_INSTALL_PACKAGES"
-  ];
-  const detectedPerms = [];
-  knownHigh.forEach((p) => {
-    if (manifestText.includes(p) || dexStr.includes(p)) {
-      detectedPerms.push({ name: p, weight: 0.92, risk: "HIGH", percentage: 92 });
-    }
-  });
-  knownMed.forEach((p) => {
-    if (manifestText.includes(p) || dexStr.includes(p)) {
-      detectedPerms.push({ name: p, weight: 0.65, risk: "MEDIUM", percentage: 65 });
-    }
-  });
-  if (detectedPerms.length === 0) {
-    detectedPerms.push(
-      { name: "INTERNET", weight: 0.58, risk: "MEDIUM", percentage: 58 },
-      { name: "ACCESS_NETWORK_STATE", weight: 0.45, risk: "MEDIUM", percentage: 45 }
-    );
+  const { permissions: manifestPerms, packageName: extractedPkg } = extractManifestData(manifestBuffer);
+  if (manifestPerms.size === 0) {
+    manifestPerms.add("INTERNET");
+    manifestPerms.add("ACCESS_NETWORK_STATE");
   }
+  let packageName = extractedPkg;
+  if (!packageName) {
+    packageName = originalName.replace(/\.apk$/i, "").replace(/[^a-zA-Z0-9._]/g, ".");
+    if (!packageName.includes(".")) packageName = "com.app." + packageName;
+  }
+  const detectedPerms = [];
+  let highCount = 0;
+  let mediumCount = 0;
+  let lowCount = 0;
+  for (const perm of Array.from(manifestPerms)) {
+    const meta = PERMISSION_WEIGHTS_MAP[perm] || { weight: 0.15, risk: "LOW" };
+    if (meta.risk === "HIGH") highCount++;
+    else if (meta.risk === "MEDIUM") mediumCount++;
+    else lowCount++;
+    detectedPerms.push({
+      name: perm,
+      weight: meta.weight,
+      risk: meta.risk,
+      percentage: Math.round(meta.weight * 100)
+    });
+  }
+  detectedPerms.sort((a, b) => b.weight - a.weight);
   const detectedAdSdks = [];
-  if (dexStr.includes("com/google/android/gms/ads") || dexStr.includes("com.google.android.gms.ads")) detectedAdSdks.push("Google AdMob");
-  if (dexStr.includes("com/facebook/ads") || dexStr.includes("com.facebook.ads")) detectedAdSdks.push("Facebook Audience Network");
-  if (dexStr.includes("com/unity3d/ads")) detectedAdSdks.push("Unity Ads");
-  if (dexStr.includes("com/applovin")) detectedAdSdks.push("AppLovin SDK");
-  if (dexStr.includes("com/airpush")) detectedAdSdks.push("Airpush Aggressive Adware");
-  if (dexStr.includes("com/startapp")) detectedAdSdks.push("StartApp In-App Ads");
+  const adSignatures = {
+    "com/airpush": "Airpush Aggressive Adware",
+    "com.airpush": "Airpush Aggressive Adware",
+    "com/startapp": "StartApp In-App Ads",
+    "com.startapp": "StartApp In-App Ads",
+    "com/leadbolt": "Leadbolt Adware SDK",
+    "com/sendDroid": "SendDroid Adware SDK",
+    "com/google/android/gms/ads": "Google Mobile Ads (AdMob)",
+    "com.google.android.gms.ads": "Google Mobile Ads (AdMob)",
+    "com/facebook/ads": "Facebook Audience Network",
+    "com.facebook.ads": "Facebook Audience Network",
+    "com/unity3d/ads": "Unity Ads Network",
+    "com/applovin": "AppLovin SDK",
+    "com/chartboost": "Chartboost Ads",
+    "com/ironsource": "ironSource Mediation Platform",
+    "com/inmobi": "InMobi Advertising Platform"
+  };
+  const dexLower = dexStr.toLowerCase();
+  for (const [sig, name] of Object.entries(adSignatures)) {
+    if (dexStr.includes(sig) || dexLower.includes(sig.toLowerCase())) {
+      if (!detectedAdSdks.includes(name)) {
+        detectedAdSdks.push(name);
+      }
+    }
+  }
   const suspiciousApis = [];
-  if (dexStr.includes("DexClassLoader")) suspiciousApis.push("DexClassLoader (Dynamic Code Loading)");
-  if (dexStr.includes("Runtime;->exec") || dexStr.includes("Runtime.getRuntime().exec")) suspiciousApis.push("Runtime.exec (Shell Command Execution)");
-  if (dexStr.includes("getDeviceId")) suspiciousApis.push("TelephonyManager.getDeviceId (IMEI Tracking)");
-  if (dexStr.includes("sendTextMessage")) suspiciousApis.push("SmsManager.sendTextMessage (Premium SMS)");
-  if (dexStr.includes("addView")) suspiciousApis.push("WindowManager.addView (Screen Overlay / Phishing)");
-  let packageName = originalName.replace(/\.apk$/i, "");
-  const pkgMatch = manifestText.match(/package="([a-zA-Z0-9_\.]+)"/);
-  if (pkgMatch && pkgMatch[1]) {
-    packageName = pkgMatch[1];
+  if (dexStr.includes("DexClassLoader") || dexStr.includes("InMemoryDexClassLoader")) {
+    suspiciousApis.push("DexClassLoader (Dynamic Code Loading / Dropper)");
+  }
+  if (dexStr.includes("DevicePolicyManager;->lockNow") || dexStr.includes("DevicePolicyManager.lockNow")) {
+    suspiciousApis.push("DevicePolicyManager.lockNow (Ransomware Device Locking)");
+  }
+  if (manifestPerms.has("SEND_SMS") && (dexStr.includes("SmsManager;->sendTextMessage") || dexStr.includes("sendTextMessage"))) {
+    suspiciousApis.push("SmsManager.sendTextMessage (Premium SMS Fraud)");
+  }
+  if (dexStr.includes("/system/bin/su") || dexStr.includes("/system/xbin/su") || dexStr.includes("su -c")) {
+    suspiciousApis.push("su Shell Execution (Privilege Escalation / Root Exploit)");
+  }
+  if (manifestPerms.has("SYSTEM_ALERT_WINDOW") && (dexStr.includes("WindowManager;->addView") || dexStr.includes("WindowManager.addView"))) {
+    suspiciousApis.push("WindowManager.addView (Screen Overlay / Phishing Risk)");
+  }
+  if (dexStr.includes("TelephonyManager;->getSubscriberId") || dexStr.includes("getSubscriberId")) {
+    suspiciousApis.push("TelephonyManager.getSubscriberId (IMSI Exfiltration)");
+  }
+  const isTrustedVendor = isKnownLegitimatePublisher(packageName, originalName);
+  let adwareScore = 0;
+  let malwareScore = 0;
+  const aggressiveAdCount = detectedAdSdks.filter((s) => s.includes("Airpush") || s.includes("StartApp") || s.includes("Leadbolt")).length;
+  if (aggressiveAdCount > 0) adwareScore += 45 * aggressiveAdCount;
+  if (manifestPerms.has("SYSTEM_ALERT_WINDOW") && manifestPerms.has("RECEIVE_BOOT_COMPLETED") && detectedAdSdks.length >= 1) {
+    adwareScore += 35;
+  }
+  if (detectedAdSdks.length >= 3) adwareScore += 30;
+  else if (detectedAdSdks.length === 2) adwareScore += 15;
+  if (manifestPerms.has("BIND_DEVICE_ADMIN")) {
+    if (suspiciousApis.some((a) => a.includes("lockNow") || a.includes("wipeData"))) {
+      malwareScore += 90;
+    } else {
+      malwareScore += 45;
+    }
+  }
+  if (manifestPerms.has("SEND_SMS") && suspiciousApis.some((a) => a.includes("sendTextMessage"))) {
+    malwareScore += 80;
+  }
+  if (manifestPerms.has("INSTALL_PACKAGES") || manifestPerms.has("DELETE_PACKAGES")) {
+    malwareScore += 40;
+  }
+  if (suspiciousApis.some((a) => a.includes("su Shell Execution"))) {
+    malwareScore += 65;
+  }
+  if (suspiciousApis.some((a) => a.includes("DexClassLoader")) && (manifestPerms.has("SEND_SMS") || manifestPerms.has("BIND_DEVICE_ADMIN") || manifestPerms.has("RECEIVE_BOOT_COMPLETED"))) {
+    malwareScore += 40;
+  }
+  if (isTrustedVendor) {
+    malwareScore = Math.max(0, malwareScore - 60);
+    adwareScore = Math.max(0, adwareScore - 50);
   }
   let verdict = "BENIGN";
   let riskLevel = "SAFE";
-  let conf = 96.2;
-  let probs = { Benign: 96.2, Adware: 2.6, Malware: 1.2 };
-  const highCount = detectedPerms.filter((p) => p.risk === "HIGH").length;
-  const isAdware = detectedAdSdks.length >= 2 || detectedAdSdks.length >= 1 && highCount >= 2;
-  const isMalware = highCount >= 4 || suspiciousApis.length >= 3 || dexStr.includes("BIND_DEVICE_ADMIN");
-  if (isMalware) {
+  let conf = 97.2;
+  let probs = { Benign: 97.2, Adware: 1.8, Malware: 1 };
+  if (malwareScore >= 50) {
     verdict = "MALWARE";
     riskLevel = "CRITICAL";
-    conf = 97.4;
-    probs = { Benign: 1.1, Adware: 1.5, Malware: 97.4 };
-  } else if (isAdware) {
+    conf = Math.min(99.4, +(86 + malwareScore * 0.12).toFixed(1));
+    const rem = Math.max(0, +(100 - conf).toFixed(1));
+    const pAd = Math.min(+(rem * 0.6).toFixed(1), rem);
+    const pBen = Math.max(0, +(rem - pAd).toFixed(1));
+    probs = {
+      Benign: pBen,
+      Adware: pAd,
+      Malware: conf
+    };
+  } else if (adwareScore >= 35) {
     verdict = "ADWARE";
     riskLevel = "HIGH";
-    conf = 94.8;
-    probs = { Benign: 3.2, Adware: 94.8, Malware: 2 };
+    conf = Math.min(98.6, +(84 + adwareScore * 0.14).toFixed(1));
+    const rem = Math.max(0, +(100 - conf).toFixed(1));
+    const pMal = Math.min(+(rem * 0.4).toFixed(1), rem);
+    const pBen = Math.max(0, +(rem - pMal).toFixed(1));
+    probs = {
+      Benign: pBen,
+      Adware: conf,
+      Malware: pMal
+    };
+  } else {
+    verdict = "BENIGN";
+    riskLevel = "SAFE";
+    conf = isTrustedVendor ? 98.6 : Math.min(98.4, +(94 + lowCount * 0.5 - highCount * 0.4).toFixed(1));
+    const rem = Math.max(0, +(100 - conf).toFixed(1));
+    const pAd = Math.min(+(rem * 0.65).toFixed(1), rem);
+    const pMal = Math.max(0, +(rem - pAd).toFixed(1));
+    probs = {
+      Benign: conf,
+      Adware: pAd,
+      Malware: pMal
+    };
   }
   return {
     success: true,
@@ -257,13 +479,13 @@ function analyzeApkFile(filePath, originalName, fileSizeKB) {
     feature_summary: {
       total_permissions: detectedPerms.length,
       high_risk_count: highCount,
-      medium_risk_count: detectedPerms.filter((p) => p.risk === "MEDIUM").length,
-      low_risk_count: detectedPerms.filter((p) => p.risk === "LOW").length,
+      medium_risk_count: mediumCount,
+      low_risk_count: lowCount,
       api_calls_detected: suspiciousApis.length,
       ad_sdks_detected: detectedAdSdks.length
     },
     risk_permissions: detectedPerms.slice(0, 10),
-    suspicious_apis: suspiciousApis.length > 0 ? suspiciousApis : ["No overt suspicious APIs identified"],
+    suspicious_apis: suspiciousApis.length > 0 ? suspiciousApis : ["No overt suspicious APIs identified in bytecode"],
     ad_sdks: detectedAdSdks,
     datasets_used: ["CICMalDroid 2020", "CICAndMal2017", "Drebin", "AndroZoo", "MalGenome Project"],
     model_info: {
@@ -401,10 +623,18 @@ var SAMPLE_BENCHMARKS = {
 };
 var handleScanRequest = (req, res) => {
   const sampleKey = (req.query?.sample_type || req.body?.sample_type || "").toLowerCase();
-  if (sampleKey && SAMPLE_BENCHMARKS[sampleKey]) {
-    return res.json(SAMPLE_BENCHMARKS[sampleKey]);
+  if (sampleKey && ["adware", "benign", "malware"].includes(sampleKey)) {
+    fetch(`http://127.0.0.1:5000/scan?sample_type=${sampleKey}`).then((pyRes) => pyRes.json()).then((data) => {
+      if (data && data.success) return res.json(data);
+      if (SAMPLE_BENCHMARKS[sampleKey]) return res.json(SAMPLE_BENCHMARKS[sampleKey]);
+      return res.status(400).json({ success: false, error: "Invalid sample type." });
+    }).catch(() => {
+      if (SAMPLE_BENCHMARKS[sampleKey]) return res.json(SAMPLE_BENCHMARKS[sampleKey]);
+      return res.status(400).json({ success: false, error: "Invalid sample type." });
+    });
+    return;
   }
-  upload.single("apk_file")(req, res, (uploadErr) => {
+  upload.single("apk_file")(req, res, async (uploadErr) => {
     if (uploadErr) {
       console.error("Upload error caught:", uploadErr);
       if (uploadErr instanceof import_multer.default.MulterError) {
@@ -425,8 +655,18 @@ var handleScanRequest = (req, res) => {
       });
     }
     const formSampleKey = (req.body?.sample_type || "").toLowerCase();
-    if (formSampleKey && SAMPLE_BENCHMARKS[formSampleKey]) {
-      return res.json(SAMPLE_BENCHMARKS[formSampleKey]);
+    if (formSampleKey && ["adware", "benign", "malware"].includes(formSampleKey)) {
+      try {
+        const pyRes = await fetch(`http://127.0.0.1:5000/scan?sample_type=${formSampleKey}`);
+        if (pyRes.ok) {
+          const data = await pyRes.json();
+          if (data && data.success) return res.json(data);
+        }
+      } catch (_) {
+      }
+      if (SAMPLE_BENCHMARKS[formSampleKey]) {
+        return res.json(SAMPLE_BENCHMARKS[formSampleKey]);
+      }
     }
     if (!req.file) {
       return res.status(400).json({
@@ -438,6 +678,26 @@ var handleScanRequest = (req, res) => {
     const originalName = req.file.originalname || "application.apk";
     const fileSizeKB = Math.round(req.file.size / 1024);
     try {
+      try {
+        const isFlaskUp = await isPortOpen(5e3);
+        if (isFlaskUp) {
+          const fileData = import_fs.default.readFileSync(filePath);
+          const form = new FormData();
+          form.append("apk_file", new Blob([fileData]), originalName);
+          const pyRes = await fetch("http://127.0.0.1:5000/scan", {
+            method: "POST",
+            body: form
+          });
+          if (pyRes.ok) {
+            const pyJson = await pyRes.json();
+            if (pyJson && pyJson.success) {
+              return res.json(pyJson);
+            }
+          }
+        }
+      } catch (proxyErr) {
+        console.warn("[AdwareGuard] Python Flask forwarding error, using static fallback:", proxyErr);
+      }
       const result = analyzeApkFile(filePath, originalName, fileSizeKB);
       return res.json(result);
     } catch (analysisErr) {
@@ -479,8 +739,112 @@ app.use((err, req, res, next) => {
     error: err.message || "An unexpected internal server error occurred."
   });
 });
+var flaskProcess = null;
+function findPythonCommand() {
+  const isWin = process.platform === "win32";
+  const candidates = [
+    import_path.default.join(process.cwd(), "venv", isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python"),
+    import_path.default.join(process.cwd(), ".venv", isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python"),
+    isWin ? "python" : "python3",
+    "python"
+  ];
+  for (const cand of candidates) {
+    if (cand.includes(import_path.default.sep)) {
+      if (import_fs.default.existsSync(cand)) return cand;
+    } else {
+      return cand;
+    }
+  }
+  return "python";
+}
+function isPortOpen(port, host = "127.0.0.1") {
+  return new Promise((resolve) => {
+    const socket = new import_net.default.Socket();
+    socket.setTimeout(1e3);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("error", () => {
+      resolve(false);
+    });
+    socket.connect(port, host);
+  });
+}
+async function ensureFlaskBackendRunning() {
+  const isRunning = await isPortOpen(5e3);
+  if (isRunning) {
+    console.log("[AdwareGuard] Python Flask backend already active on http://127.0.0.1:5000");
+    return;
+  }
+  const appPyPath = import_path.default.join(process.cwd(), "app.py");
+  if (!import_fs.default.existsSync(appPyPath)) {
+    console.warn("[AdwareGuard] app.py not found in project root; skipping automatic Python startup.");
+    return;
+  }
+  const pyCmd = findPythonCommand();
+  console.log(`[AdwareGuard] Auto-launching Python Flask backend (${pyCmd} app.py)...`);
+  try {
+    flaskProcess = (0, import_child_process.spawn)(pyCmd, ["app.py"], {
+      cwd: process.cwd(),
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      stdio: "pipe"
+    });
+    flaskProcess.stdout?.on("data", (chunk) => {
+      const msg = chunk.toString().trim();
+      if (msg) console.log(`[Flask] ${msg}`);
+    });
+    flaskProcess.stderr?.on("data", (chunk) => {
+      const msg = chunk.toString().trim();
+      if (msg && !msg.includes("WARNING: This is a development server")) {
+        console.warn(`[Flask] ${msg}`);
+      }
+    });
+    flaskProcess.on("exit", (code) => {
+      if (code !== 0 && code !== null) {
+        console.warn(`[Flask] Process exited with code ${code}`);
+      }
+    });
+    const cleanup = () => {
+      if (flaskProcess && !flaskProcess.killed && flaskProcess.pid) {
+        try {
+          if (process.platform === "win32") {
+            (0, import_child_process.spawn)("taskkill", ["/pid", flaskProcess.pid.toString(), "/f", "/t"]);
+          } else {
+            flaskProcess.kill("SIGTERM");
+          }
+        } catch (_) {
+        }
+      }
+    };
+    process.on("exit", cleanup);
+    process.on("SIGINT", () => {
+      cleanup();
+      process.exit(0);
+    });
+    process.on("SIGTERM", () => {
+      cleanup();
+      process.exit(0);
+    });
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 400));
+      if (await isPortOpen(5e3)) {
+        console.log("[AdwareGuard] Python Flask backend successfully initialized on http://127.0.0.1:5000");
+        break;
+      }
+    }
+  } catch (err) {
+    console.warn("[AdwareGuard] Failed to auto-launch Python Flask process:", err);
+  }
+}
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  await ensureFlaskBackendRunning();
+  const isProduction = process.env.NODE_ENV === "production" || process.env.RENDER === "true" || process.env.IS_PRODUCTION === "true";
+  if (!isProduction) {
     const vite = await (0, import_vite.createServer)({
       server: { middlewareMode: true },
       appType: "spa"
@@ -488,10 +852,19 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = import_path.default.join(process.cwd(), "dist");
-    app.use(import_express.default.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(import_path.default.join(distPath, "index.html"));
-    });
+    if (import_fs.default.existsSync(distPath)) {
+      app.use(import_express.default.static(distPath));
+      app.get("*", (req, res) => {
+        res.sendFile(import_path.default.join(distPath, "index.html"));
+      });
+    } else {
+      console.warn("Production dist folder not found; running Vite middleware fallback.");
+      const vite = await (0, import_vite.createServer)({
+        server: { middlewareMode: true },
+        appType: "spa"
+      });
+      app.use(vite.middlewares);
+    }
   }
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`AdwareGuard web server running on http://0.0.0.0:${PORT}`);

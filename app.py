@@ -61,14 +61,15 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/scan", methods=["POST"])
+@app.route("/scan", methods=["POST", "GET"])
+@app.route("/api/scan", methods=["POST", "GET"])
 def scan_apk():
     """
     Scans an uploaded Android APK file or sample profile.
     Extracts 360 multimodal features and predicts Benign/Adware/Malware.
     """
-    # Check for sample test profile request
-    sample_type = request.form.get("sample_type")
+    # Check for sample test profile request (from form or query param)
+    sample_type = request.form.get("sample_type") or request.args.get("sample_type")
     if sample_type in ["adware", "benign", "malware"]:
         return handle_sample_scan(sample_type)
 
@@ -322,6 +323,7 @@ def handle_sample_scan(sample_type):
 
 
 @app.route("/model-info")
+@app.route("/api/model-info")
 def model_info():
     """Returns architecture specifications, benchmark metrics, and peer-reviewed citations."""
     return jsonify({
@@ -408,6 +410,7 @@ def model_info():
 
 
 @app.route("/health")
+@app.route("/api/health")
 def health():
     return jsonify({"status": "ok", "model_loaded": True})
 

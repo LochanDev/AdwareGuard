@@ -32,6 +32,7 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import config
+from utils.permission_vocab import PERMISSION_VOCAB, PERMISSION_WEIGHTS
 
 
 class AdwareDatasetLoader:
@@ -104,25 +105,47 @@ class AdwareDatasetLoader:
         for i in range(n_samples):
             label = y[i]
             if label == 0:  # Benign
-                perm_active = np.random.choice(200, size=np.random.randint(2, 12), replace=False)
-                api_active = 200 + np.random.choice(150, size=np.random.randint(1, 8), replace=False)
-                # low adware SDKs
+                n_med = np.random.randint(2, 7)
+                med_picks = np.random.choice(range(22, 36), size=n_med, replace=False)
+                n_low = np.random.randint(1, 6)
+                low_picks = np.random.choice(range(36, 200), size=n_low, replace=False)
+                high_picks = []
+                if np.random.rand() < 0.15:
+                    high_picks = [np.random.choice([5, 6, 10])]
+                perm_active = list(med_picks) + list(low_picks) + high_picks
+
+                n_net = np.random.randint(2, 6)
+                net_apis = 200 + np.random.choice(range(0, 20), size=n_net, replace=False)
+                ad_apis = []
+                if np.random.rand() < 0.25:
+                    ad_apis = [200 + np.random.choice([66, 67])]
+                api_active = list(net_apis) + ad_apis
+
                 meta = [
-                    np.random.uniform(0.4, 0.7),   # minSdk
-                    np.random.uniform(0.7, 1.0),   # targetSdk
-                    np.random.uniform(0.1, 0.4),   # activities
-                    np.random.uniform(0.05, 0.2),  # services
-                    np.random.uniform(0.05, 0.2),  # receivers
-                    np.random.uniform(0.0, 0.1),   # providers
-                    len(perm_active) / 50.0,       # numPermissions
-                    1.0 if np.random.rand() > 0.2 else 0.0,
-                    0.0,                           # device admin rare
-                    np.random.uniform(0.1, 0.6)    # appSize
+                    np.random.uniform(0.4, 0.7),
+                    np.random.uniform(0.7, 1.0),
+                    np.random.uniform(0.1, 0.4),
+                    np.random.uniform(0.05, 0.2),
+                    np.random.uniform(0.05, 0.2),
+                    np.random.uniform(0.0, 0.1),
+                    len(perm_active) / 50.0,
+                    1.0 if np.random.rand() > 0.85 else 0.0,
+                    0.0,
+                    np.random.uniform(0.1, 0.6)
                 ]
             elif label == 1:  # Adware
-                # Frequent network, wake_lock, system alert, ad SDK APIs
-                perm_active = np.random.choice(200, size=np.random.randint(8, 25), replace=False)
-                api_active = 200 + np.random.choice(150, size=np.random.randint(8, 22), replace=False)
+                core_perms = [22, 23, 12, 18, 10, 33, 34]
+                extra_med = np.random.choice([24, 25, 26, 27, 28, 29, 31, 32], size=np.random.randint(2, 6), replace=False)
+                extra_low = np.random.choice(range(36, 100), size=np.random.randint(3, 8), replace=False)
+                perm_active = list(set(core_perms + list(extra_med) + list(extra_low)))
+
+                n_ads = np.random.randint(2, 6)
+                ad_picks = 200 + np.random.choice(range(66, 96), size=n_ads, replace=False)
+                ad_behaviors = [200 + 99, 200 + 40, 200 + 18, 200 + 103]
+                n_behaviors = np.random.randint(2, 4)
+                chosen_behaviors = list(np.random.choice(ad_behaviors, size=n_behaviors, replace=False))
+                api_active = list(set(list(ad_picks) + chosen_behaviors))
+
                 meta = [
                     np.random.uniform(0.3, 0.6),
                     np.random.uniform(0.6, 0.9),
@@ -132,13 +155,22 @@ class AdwareDatasetLoader:
                     np.random.uniform(0.0, 0.2),
                     len(perm_active) / 50.0,
                     1.0,
-                    0.0 if np.random.rand() > 0.1 else 1.0,
+                    0.0,
                     np.random.uniform(0.2, 0.85)
                 ]
             else:  # Malware
-                # Critical reflection, device admin, SMS, data exfil
-                perm_active = np.random.choice(200, size=np.random.randint(12, 35), replace=False)
-                api_active = 200 + np.random.choice(150, size=np.random.randint(12, 30), replace=False)
+                mal_core = [17, 1, 2, 3, 0, 19, 20, 4, 7, 12, 13]
+                n_core = np.random.randint(4, 9)
+                chosen_core = list(np.random.choice(mal_core, size=n_core, replace=False))
+                extra_med = list(np.random.choice(range(22, 36), size=np.random.randint(3, 7), replace=False))
+                extra_low = list(np.random.choice(range(36, 120), size=np.random.randint(2, 6), replace=False))
+                perm_active = list(set(chosen_core + extra_med + extra_low))
+
+                mal_apis = [200 + 20, 200 + 31, 200 + 22, 200 + 52, 200 + 105, 200 + 106, 200 + 41, 200 + 24]
+                n_mal_apis = np.random.randint(3, 7)
+                chosen_mal_apis = list(np.random.choice(mal_apis, size=n_mal_apis, replace=False))
+                api_active = list(set(chosen_mal_apis))
+
                 meta = [
                     np.random.uniform(0.2, 0.5),
                     np.random.uniform(0.5, 0.8),
@@ -148,11 +180,13 @@ class AdwareDatasetLoader:
                     np.random.uniform(0.05, 0.3),
                     len(perm_active) / 50.0,
                     1.0,
-                    1.0 if np.random.rand() > 0.4 else 0.0,
+                    1.0 if np.random.rand() > 0.35 else 0.0,
                     np.random.uniform(0.05, 0.7)
                 ]
 
-            X[i, perm_active] = 1.0
+            for p in perm_active:
+                p_name = PERMISSION_VOCAB[p]
+                X[i, p] = PERMISSION_WEIGHTS.get(p_name, 0.1)
             X[i, api_active] = 1.0
             X[i, 350:360] = meta
 

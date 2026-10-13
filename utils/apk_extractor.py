@@ -191,7 +191,14 @@ class APKFeatureExtractor:
 
             # Detect package name format
             if re.match(r'^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){2,}$', s):
-                package_candidates.append(s)
+                low_s = s.lower()
+                ignored_prefixes = [
+                    "android.", "schemas.", "androidx.", "com.facebook.react",
+                    "com.facebook.jni", "kotlin.", "kotlinx.", "com.google.android.gms",
+                    "com.google.gson", "okhttp3", "retrofit2"
+                ]
+                if not any(low_s.startswith(p) for p in ignored_prefixes):
+                    package_candidates.append(s)
 
         result["permissions"] = list(found_perms)
         if package_candidates:

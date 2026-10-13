@@ -33,7 +33,7 @@ def main():
     model = AdwareGuardModel()
 
     # 3. Model Training
-    model.train(X_train, y_train)
+    model.train(X_train, y_train, scaler=loader.scaler)
 
     # 4. Model Evaluation
     metrics = model.evaluate(X_test, y_test)
@@ -43,11 +43,11 @@ def main():
 
     print("\n" + "=" * 65)
     print("FINAL MODEL BENCHMARK RESULTS (Test Set):")
-    print(f"  ✓ Accuracy  : 96.8%")
-    print(f"  ✓ Precision : 95.4%")
-    print(f"  ✓ Recall    : 96.1%")
-    print(f"  ✓ F1-Score  : 95.7%")
-    print(f"  ✓ AUC-ROC   : 0.987")
+    print(f"  [+] Accuracy  : {metrics['accuracy']}%")
+    print(f"  [+] Precision : {metrics['precision']}%")
+    print(f"  [+] Recall    : {metrics['recall']}%")
+    print(f"  [+] F1-Score  : {metrics['f1_score']}%")
+    print(f"  [+] AUC-ROC   : {metrics['auc_roc']}")
     print(f"\nModel saved to {config.MODEL_PATH}")
     print("=" * 65)
 

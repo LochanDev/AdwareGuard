@@ -1,6 +1,8 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import net from "net";
+import { spawn, ChildProcess } from "child_process";
 import multer from "multer";
 import AdmZip from "adm-zip";
 import { createServer as createViteServer } from "vite";
@@ -260,7 +262,13 @@ function extractManifestData(manifestBuffer: Buffer): { permissions: Set<string>
 
               // Package name candidate
               if (!packageName && /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){2,}$/i.test(str)) {
-                if (!str.startsWith("android.") && !str.startsWith("schemas.") && !str.includes("http")) {
+                const lowerStr = str.toLowerCase();
+                const ignoredPkgPrefixes = [
+                  "android.", "schemas.", "http", "androidx.", "com.facebook.react",
+                  "com.facebook.jni", "kotlin.", "kotlinx.", "com.google.android.gms",
+                  "com.google.gson", "okhttp3", "retrofit2"
+                ];
+                if (!ignoredPkgPrefixes.some(p => lowerStr.startsWith(p)) && !/[A-Z]/.test(str.split(".").pop() || "")) {
                   packageName = str;
                 }
               }
@@ -488,31 +496,37 @@ function analyzeApkFile(filePath: string, originalName: string, fileSizeKB: numb
     verdict = "MALWARE";
     riskLevel = "CRITICAL";
     conf = Math.min(99.4, +(86 + malwareScore * 0.12).toFixed(1));
-    const rem = +(100 - conf).toFixed(1);
+    const rem = Math.max(0, +(100 - conf).toFixed(1));
+    const pAd = Math.min(+(rem * 0.6).toFixed(1), rem);
+    const pBen = Math.max(0, +(rem - pAd).toFixed(1));
     probs = {
-      Benign: +(rem * 0.4).toFixed(1),
-      Adware: +(rem * 0.6).toFixed(1),
+      Benign: pBen,
+      Adware: pAd,
       Malware: conf,
     };
   } else if (adwareScore >= 35) {
     verdict = "ADWARE";
     riskLevel = "HIGH";
     conf = Math.min(98.6, +(84 + adwareScore * 0.14).toFixed(1));
-    const rem = +(100 - conf).toFixed(1);
+    const rem = Math.max(0, +(100 - conf).toFixed(1));
+    const pMal = Math.min(+(rem * 0.4).toFixed(1), rem);
+    const pBen = Math.max(0, +(rem - pMal).toFixed(1));
     probs = {
-      Benign: +(rem * 0.6).toFixed(1),
+      Benign: pBen,
       Adware: conf,
-      Malware: +(rem * 0.4).toFixed(1),
+      Malware: pMal,
     };
   } else {
     verdict = "BENIGN";
     riskLevel = "SAFE";
     conf = isTrustedVendor ? 98.6 : Math.min(98.4, +(94.0 + (lowCount * 0.5) - (highCount * 0.4)).toFixed(1));
-    const rem = +(100 - conf).toFixed(1);
+    const rem = Math.max(0, +(100 - conf).toFixed(1));
+    const pAd = Math.min(+(rem * 0.65).toFixed(1), rem);
+    const pMal = Math.max(0, +(rem - pAd).toFixed(1));
     probs = {
       Benign: conf,
-      Adware: +(rem * 0.65).toFixed(1),
-      Malware: +(rem * 0.35).toFixed(1),
+      Adware: pAd,
+      Malware: pMal,
     };
   }
 
@@ -676,12 +690,23 @@ const SAMPLE_BENCHMARKS: Record<string, any> = {
 const handleScanRequest = (req: express.Request, res: express.Response) => {
   // 1. Check if sample_type was passed via URL query or parsed JSON/urlencoded body
   const sampleKey = ((req.query?.sample_type as string) || (req.body?.sample_type as string) || "").toLowerCase();
-  if (sampleKey && SAMPLE_BENCHMARKS[sampleKey]) {
-    return res.json(SAMPLE_BENCHMARKS[sampleKey]);
+  if (sampleKey && ["adware", "benign", "malware"].includes(sampleKey)) {
+    fetch(`http://127.0.0.1:5000/scan?sample_type=${sampleKey}`)
+      .then((pyRes) => pyRes.json())
+      .then((data) => {
+        if (data && data.success) return res.json(data);
+        if (SAMPLE_BENCHMARKS[sampleKey]) return res.json(SAMPLE_BENCHMARKS[sampleKey]);
+        return res.status(400).json({ success: false, error: "Invalid sample type." });
+      })
+      .catch(() => {
+        if (SAMPLE_BENCHMARKS[sampleKey]) return res.json(SAMPLE_BENCHMARKS[sampleKey]);
+        return res.status(400).json({ success: false, error: "Invalid sample type." });
+      });
+    return;
   }
 
   // 2. Handle multipart file upload via multer
-  upload.single("apk_file")(req, res, (uploadErr) => {
+  upload.single("apk_file")(req, res, async (uploadErr) => {
     if (uploadErr) {
       console.error("Upload error caught:", uploadErr);
       if (uploadErr instanceof multer.MulterError) {
@@ -704,8 +729,17 @@ const handleScanRequest = (req: express.Request, res: express.Response) => {
 
     // Check if sample_type was in the multipart form payload
     const formSampleKey = (req.body?.sample_type as string || "").toLowerCase();
-    if (formSampleKey && SAMPLE_BENCHMARKS[formSampleKey]) {
-      return res.json(SAMPLE_BENCHMARKS[formSampleKey]);
+    if (formSampleKey && ["adware", "benign", "malware"].includes(formSampleKey)) {
+      try {
+        const pyRes = await fetch(`http://127.0.0.1:5000/scan?sample_type=${formSampleKey}`);
+        if (pyRes.ok) {
+          const data = await pyRes.json();
+          if (data && data.success) return res.json(data);
+        }
+      } catch (_) {}
+      if (SAMPLE_BENCHMARKS[formSampleKey]) {
+        return res.json(SAMPLE_BENCHMARKS[formSampleKey]);
+      }
     }
 
     // Ensure an APK file was uploaded
@@ -721,6 +755,31 @@ const handleScanRequest = (req: express.Request, res: express.Response) => {
     const fileSizeKB = Math.round(req.file.size / 1024);
 
     try {
+      // 1. Forward directly to Python Flask FT-Transformer ML backend if available
+      try {
+        const isFlaskUp = await isPortOpen(5000);
+        if (isFlaskUp) {
+          const fileData = fs.readFileSync(filePath);
+          const form = new FormData();
+          form.append("apk_file", new Blob([fileData]), originalName);
+
+          const pyRes = await fetch("http://127.0.0.1:5000/scan", {
+            method: "POST",
+            body: form,
+          });
+
+          if (pyRes.ok) {
+            const pyJson = await pyRes.json();
+            if (pyJson && pyJson.success) {
+              return res.json(pyJson);
+            }
+          }
+        }
+      } catch (proxyErr) {
+        console.warn("[AdwareGuard] Python Flask forwarding error, using static fallback:", proxyErr);
+      }
+
+      // 2. Static heuristic fallback
       const result = analyzeApkFile(filePath, originalName, fileSizeKB);
       return res.json(result);
     } catch (analysisErr: any) {
@@ -771,8 +830,121 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   });
 });
 
+// Auto-managed Python Flask ML backend child process
+let flaskProcess: ChildProcess | null = null;
+
+function findPythonCommand(): string {
+  const isWin = process.platform === "win32";
+  const candidates = [
+    path.join(process.cwd(), "venv", isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python"),
+    path.join(process.cwd(), ".venv", isWin ? "Scripts" : "bin", isWin ? "python.exe" : "python"),
+    isWin ? "python" : "python3",
+    "python",
+  ];
+  for (const cand of candidates) {
+    if (cand.includes(path.sep)) {
+      if (fs.existsSync(cand)) return cand;
+    } else {
+      return cand;
+    }
+  }
+  return "python";
+}
+
+function isPortOpen(port: number, host = "127.0.0.1"): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(1000);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("error", () => {
+      resolve(false);
+    });
+    socket.connect(port, host);
+  });
+}
+
+async function ensureFlaskBackendRunning(): Promise<void> {
+  const isRunning = await isPortOpen(5000);
+  if (isRunning) {
+    console.log("[AdwareGuard] Python Flask backend already active on http://127.0.0.1:5000");
+    return;
+  }
+
+  const appPyPath = path.join(process.cwd(), "app.py");
+  if (!fs.existsSync(appPyPath)) {
+    console.warn("[AdwareGuard] app.py not found in project root; skipping automatic Python startup.");
+    return;
+  }
+
+  const pyCmd = findPythonCommand();
+  console.log(`[AdwareGuard] Auto-launching Python Flask backend (${pyCmd} app.py)...`);
+
+  try {
+    flaskProcess = spawn(pyCmd, ["app.py"], {
+      cwd: process.cwd(),
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      stdio: "pipe",
+    });
+
+    flaskProcess.stdout?.on("data", (chunk: Buffer) => {
+      const msg = chunk.toString().trim();
+      if (msg) console.log(`[Flask] ${msg}`);
+    });
+
+    flaskProcess.stderr?.on("data", (chunk: Buffer) => {
+      const msg = chunk.toString().trim();
+      if (msg && !msg.includes("WARNING: This is a development server")) {
+        console.warn(`[Flask] ${msg}`);
+      }
+    });
+
+    flaskProcess.on("exit", (code: number | null) => {
+      if (code !== 0 && code !== null) {
+        console.warn(`[Flask] Process exited with code ${code}`);
+      }
+    });
+
+    const cleanup = () => {
+      if (flaskProcess && !flaskProcess.killed && flaskProcess.pid) {
+        try {
+          if (process.platform === "win32") {
+            spawn("taskkill", ["/pid", flaskProcess.pid.toString(), "/f", "/t"]);
+          } else {
+            flaskProcess.kill("SIGTERM");
+          }
+        } catch (_) {}
+      }
+    };
+
+    process.on("exit", cleanup);
+    process.on("SIGINT", () => { cleanup(); process.exit(0); });
+    process.on("SIGTERM", () => { cleanup(); process.exit(0); });
+
+    // Poll until Flask is ready on port 5000 (up to 6 seconds)
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 400));
+      if (await isPortOpen(5000)) {
+        console.log("[AdwareGuard] Python Flask backend successfully initialized on http://127.0.0.1:5000");
+        break;
+      }
+    }
+  } catch (err) {
+    console.warn("[AdwareGuard] Failed to auto-launch Python Flask process:", err);
+  }
+}
+
 // Vite Middleware for client frontend rendering
 async function startServer() {
+  // 1. Auto-launch Python Flask ML service if not running
+  await ensureFlaskBackendRunning();
+
   const isProduction =
     process.env.NODE_ENV === "production" ||
     process.env.RENDER === "true" ||

@@ -504,12 +504,12 @@ export const ScannerConsole: React.FC<ScannerConsoleProps> = ({
                   <div>
                     <div className="flex justify-between font-medium text-slate-700 dark:text-slate-300 mb-1">
                       <span>Benign (Safe)</span>
-                      <span className="font-mono">{scanResult.probabilities.Benign}%</span>
+                      <span className="font-mono">{Math.max(0, scanResult.probabilities.Benign)}%</span>
                     </div>
                     <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
                       <div
                         className="h-full bg-emerald-600 dark:bg-emerald-500 transition-all duration-500"
-                        style={{ width: `${scanResult.probabilities.Benign}%` }}
+                        style={{ width: `${Math.max(0, Math.min(100, scanResult.probabilities.Benign))}%` }}
                       />
                     </div>
                   </div>
@@ -518,12 +518,12 @@ export const ScannerConsole: React.FC<ScannerConsoleProps> = ({
                   <div>
                     <div className="flex justify-between font-medium text-slate-700 dark:text-slate-300 mb-1">
                       <span>Adware (Aggressive Ads)</span>
-                      <span className="font-mono">{scanResult.probabilities.Adware}%</span>
+                      <span className="font-mono">{Math.max(0, scanResult.probabilities.Adware)}%</span>
                     </div>
                     <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
                       <div
                         className="h-full bg-amber-600 dark:bg-amber-500 transition-all duration-500"
-                        style={{ width: `${scanResult.probabilities.Adware}%` }}
+                        style={{ width: `${Math.max(0, Math.min(100, scanResult.probabilities.Adware))}%` }}
                       />
                     </div>
                   </div>
@@ -532,12 +532,12 @@ export const ScannerConsole: React.FC<ScannerConsoleProps> = ({
                   <div>
                     <div className="flex justify-between font-medium text-slate-700 dark:text-slate-300 mb-1">
                       <span>Malware (Trojan / Exploit)</span>
-                      <span className="font-mono">{scanResult.probabilities.Malware}%</span>
+                      <span className="font-mono">{Math.max(0, scanResult.probabilities.Malware)}%</span>
                     </div>
                     <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
                       <div
                         className="h-full bg-red-600 dark:bg-red-500 transition-all duration-500"
-                        style={{ width: `${scanResult.probabilities.Malware}%` }}
+                        style={{ width: `${Math.max(0, Math.min(100, scanResult.probabilities.Malware))}%` }}
                       />
                     </div>
                   </div>

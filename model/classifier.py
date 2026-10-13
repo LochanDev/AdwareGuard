@@ -71,12 +71,14 @@ class AdwareGuardModel:
         )
         self.classes_ = np.array([0, 1, 2])
         self.is_fitted = False
+        self.scaler = None
 
-    def train(self, X_train, y_train):
+    def train(self, X_train, y_train, scaler=None):
         """
         Fits the neural network with balanced sample weights.
         """
         print("Training AdwareGuard Transformer simulation model...")
+        self.scaler = scaler
         # Compute balanced class weights to counteract distribution skew
         sample_weights = compute_sample_weight(class_weight="balanced", y=y_train)
 
@@ -177,20 +179,27 @@ class AdwareGuardModel:
         # Ensure 2D array shape (1, 360)
         vec = np.asarray(feature_vector, dtype=np.float32).reshape(1, -1)
 
+        if self.scaler is None and os.path.exists(config.SCALER_PATH):
+            try:
+                self.scaler = joblib.load(config.SCALER_PATH)
+            except Exception:
+                pass
+
         if self.is_fitted:
             try:
-                probs = self.model.predict_proba(vec)[0]
+                vec_scaled = self.scaler.transform(vec) if self.scaler is not None else vec
+                probs = self.model.predict_proba(vec_scaled)[0]
             except Exception:
                 probs = self._heuristic_probabilities(vec[0])
         else:
             probs = self._heuristic_probabilities(vec[0])
 
-        benign_prob = float(probs[0]) * 100.0
-        adware_prob = float(probs[1]) * 100.0
-        malware_prob = float(probs[2]) * 100.0
+        benign_prob = max(0.0, min(100.0, float(probs[0]) * 100.0))
+        adware_prob = max(0.0, min(100.0, float(probs[1]) * 100.0))
+        malware_prob = max(0.0, min(100.0, float(probs[2]) * 100.0))
 
         class_idx = int(np.argmax(probs))
-        confidence = float(np.max(probs)) * 100.0
+        confidence = max(0.0, min(100.0, float(np.max(probs)) * 100.0))
 
         if class_idx == 0:
             verdict = "BENIGN"
@@ -222,34 +231,43 @@ class AdwareGuardModel:
         api_slice = vec[200:350]
         meta_slice = vec[350:360]
 
-        perm_score = np.sum(perm_slice)
-        api_score = np.sum(api_slice)
         has_admin = meta_slice[8] > 0.5
-        num_perms = meta_slice[6] * 50.0
+        has_send_sms = perm_slice[1] > 0.5
+        has_sms_api = api_slice[52] > 0.5 or api_slice[137] > 0.5
+        has_lock_api = api_slice[105] > 0.5 or api_slice[106] > 0.5
+        has_root_exploit = api_slice[22] > 0.5 and (perm_slice[19] > 0.5 or perm_slice[20] > 0.5)
 
-        # Adware signature markers: High API activity + intermediate permissions + internet
-        adware_indicator = (
-            (api_score >= 3.0 and perm_score >= 2.0) or
-            (num_perms > 8 and api_score > 2.0)
+        # Count detected Ad SDKs (slots 65 through 90)
+        ad_sdk_count = np.sum(api_slice[65:90] > 0.5)
+        has_overlay = perm_slice[12] > 0.5 # SYSTEM_ALERT_WINDOW
+        has_boot = perm_slice[18] > 0.5    # RECEIVE_BOOT_COMPLETED
+
+        # Malware signature markers: True active threat vectors
+        malware_indicator = (
+            (has_admin and has_lock_api) or
+            (has_send_sms and has_sms_api) or
+            has_lock_api or
+            has_root_exploit
         )
 
-        # Malware signature markers: Device admin + SMS/Contacts permissions + dynamic loaders
-        malware_indicator = (
-            has_admin or
-            (perm_score > 6.0 and api_score > 4.0)
+        # Adware signature markers: Monetization SDK presence + overlay / aggressive persistence
+        adware_indicator = (
+            ad_sdk_count >= 2 or
+            (ad_sdk_count >= 1 and (has_overlay or has_boot)) or
+            (api_slice[71] > 0.5 or api_slice[70] > 0.5) # Airpush or StartApp aggressive adware
         )
 
         if malware_indicator:
-            p_mal = 0.88 + np.random.uniform(0.01, 0.08)
-            p_ad = 0.08 + np.random.uniform(0.01, 0.04)
+            p_mal = 0.92 + np.random.uniform(0.01, 0.06)
+            p_ad = 0.05 + np.random.uniform(0.01, 0.02)
             p_ben = max(0.01, 1.0 - p_mal - p_ad)
         elif adware_indicator:
-            p_ad = 0.89 + np.random.uniform(0.01, 0.07)
-            p_ben = 0.03 + np.random.uniform(0.01, 0.04)
+            p_ad = 0.91 + np.random.uniform(0.01, 0.05)
+            p_ben = 0.06 + np.random.uniform(0.01, 0.02)
             p_mal = max(0.01, 1.0 - p_ad - p_ben)
         else:
-            p_ben = 0.92 + np.random.uniform(0.01, 0.06)
-            p_ad = 0.04 + np.random.uniform(0.01, 0.03)
+            p_ben = 0.95 + np.random.uniform(0.01, 0.04)
+            p_ad = 0.03 + np.random.uniform(0.005, 0.01)
             p_mal = max(0.01, 1.0 - p_ben - p_ad)
 
         probs = np.array([p_ben, p_ad, p_mal])
@@ -323,6 +341,11 @@ class AdwareGuardModel:
         if os.path.exists(load_path):
             try:
                 model = joblib.load(load_path)
+                if getattr(model, "scaler", None) is None and os.path.exists(config.SCALER_PATH):
+                    try:
+                        model.scaler = joblib.load(config.SCALER_PATH)
+                    except Exception:
+                        pass
                 print(f"Loaded existing model from {load_path}")
                 return model
             except Exception as e:

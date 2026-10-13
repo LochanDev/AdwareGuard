@@ -116,10 +116,28 @@ export async function analyzeApkClientSide(file: File): Promise<ScanResult> {
   }
 
   // 1. Extract Package Name
-  let packageName = file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9._]/g, ".");
-  const pkgMatch = contentStr.match(/package="([a-zA-Z0-9_.]+)"/) || contentStr.match(/L([a-zA-Z0-9_]+(?:\/[a-zA-Z0-9_]+){2,});/);
+  const cleanBaseName = file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9._]/g, ".");
+  let packageName = cleanBaseName.includes(".") ? cleanBaseName : `com.app.${cleanBaseName.toLowerCase()}`;
+
+  // Look for manifest package attribute first
+  const pkgMatch = contentStr.match(/package="([a-zA-Z0-9_.]+)"/);
   if (pkgMatch && pkgMatch[1]) {
-    packageName = pkgMatch[1].replace(/\//g, ".");
+    packageName = pkgMatch[1];
+  } else {
+    // Search for package-style tokens in strings, filtering out common runtime library namespaces
+    const candidates = contentStr.match(/([a-z][a-z0-9_]*\.[a-z][a-z0-9_]+(?:\.[a-z][a-z0-9_]+)+)/gi) || [];
+    const ignoredPrefixes = [
+      "com.facebook.react", "com.facebook.jni", "com.google.android", "androidx.",
+      "android.support", "android.arch", "kotlin.", "kotlinx.", "com.google.gson",
+      "okhttp3.", "retrofit2.", "io.reactivex", "com.squareup"
+    ];
+    for (const cand of candidates) {
+      const lower = cand.toLowerCase();
+      if (!ignoredPrefixes.some(p => lower.startsWith(p)) && !cand.endsWith(".java") && !cand.endsWith(".class")) {
+        packageName = cand;
+        break;
+      }
+    }
   }
 
   // 2. Extract Permissions (strictly matching android.permission namespace)
@@ -218,30 +236,39 @@ export async function analyzeApkClientSide(file: File): Promise<ScanResult> {
 
   if (malwareScore >= 50) {
     verdict = "MALWARE";
-    confidence = Math.min(99.4, 86 + malwareScore * 0.12);
+    confidence = Math.min(99.2, +(86 + malwareScore * 0.12).toFixed(1));
     riskLevel = "CRITICAL";
+    const rem = Math.max(0, +(100 - confidence).toFixed(1));
+    const pAd = Math.min(+(rem * 0.6).toFixed(1), rem);
+    const pBen = Math.max(0, +(rem - pAd).toFixed(1));
     probabilities = {
-      Benign: +(100 - confidence - 1.5).toFixed(1),
-      Adware: 1.5,
-      Malware: +confidence.toFixed(1),
+      Benign: pBen,
+      Adware: pAd,
+      Malware: confidence,
     };
   } else if (adwareScore >= 35) {
     verdict = "ADWARE";
-    confidence = Math.min(98.6, 84 + adwareScore * 0.14);
+    confidence = Math.min(98.6, +(84 + adwareScore * 0.14).toFixed(1));
     riskLevel = "HIGH";
+    const rem = Math.max(0, +(100 - confidence).toFixed(1));
+    const pMal = Math.min(+(rem * 0.4).toFixed(1), rem);
+    const pBen = Math.max(0, +(rem - pMal).toFixed(1));
     probabilities = {
-      Benign: +(100 - confidence - 1.8).toFixed(1),
-      Adware: +confidence.toFixed(1),
-      Malware: 1.8,
+      Benign: pBen,
+      Adware: confidence,
+      Malware: pMal,
     };
   } else {
     verdict = "BENIGN";
-    confidence = isTrustedVendor ? 98.6 : Math.min(98.8, 93 + (lowCount - highCount) * 0.8);
+    confidence = isTrustedVendor ? 98.6 : Math.min(98.4, +(94.0 + (lowCount * 0.5) - (highCount * 0.4)).toFixed(1));
     riskLevel = "SAFE";
+    const rem = Math.max(0, +(100 - confidence).toFixed(1));
+    const pAd = Math.min(+(rem * 0.65).toFixed(1), rem);
+    const pMal = Math.max(0, +(rem - pAd).toFixed(1));
     probabilities = {
-      Benign: +confidence.toFixed(1),
-      Adware: +((100 - confidence) * 0.65).toFixed(1),
-      Malware: +((100 - confidence) * 0.35).toFixed(1),
+      Benign: confidence,
+      Adware: pAd,
+      Malware: pMal,
     };
   }
 

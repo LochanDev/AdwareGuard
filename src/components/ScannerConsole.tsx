@@ -695,18 +695,29 @@ export const ScannerConsole: React.FC<ScannerConsoleProps> = ({
                               <td className="px-3 py-3 text-right font-mono text-slate-700 dark:text-slate-300">
                                 {p.weight.toFixed(2)}
                               </td>
-                              <td className="px-4 py-3 w-36">
-                                <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                                  <div
-                                    className={`h-full ${
-                                      p.risk === "HIGH"
-                                        ? "bg-red-600 dark:bg-red-500"
-                                        : p.risk === "MEDIUM"
-                                        ? "bg-amber-600 dark:bg-amber-500"
-                                        : "bg-emerald-600 dark:bg-emerald-500"
-                                    }`}
-                                    style={{ width: `${p.percentage}%` }}
-                                  />
+                              <td className="px-4 py-3 w-44">
+                                <div className="flex items-center gap-2">
+                                  <div className="h-2 w-full rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                                    <div
+                                      className={`h-full ${
+                                        p.risk === "HIGH"
+                                          ? "bg-red-600 dark:bg-red-500 shadow-xs shadow-red-500/50"
+                                          : p.risk === "MEDIUM"
+                                          ? "bg-amber-600 dark:bg-amber-500"
+                                          : "bg-emerald-600 dark:bg-emerald-500"
+                                      }`}
+                                      style={{ width: `${p.percentage}%` }}
+                                    />
+                                  </div>
+                                  <span className={`text-[11px] font-mono font-semibold min-w-8 text-right ${
+                                    p.risk === "HIGH"
+                                      ? "text-red-700 dark:text-red-400"
+                                      : p.risk === "MEDIUM"
+                                      ? "text-amber-700 dark:text-amber-400"
+                                      : "text-slate-600 dark:text-slate-400"
+                                  }`}>
+                                    {p.percentage}%
+                                  </span>
                                 </div>
                               </td>
                               <td className="px-4 py-3 text-slate-600 dark:text-slate-400 max-w-sm">

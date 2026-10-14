@@ -232,6 +232,24 @@ class APKFeatureExtractor:
         if package_candidates:
             result["metadata"]["package_name"] = package_candidates[0]
 
+        # Check for Widget provider/receiver (e.g. APPWIDGET_UPDATE or AppWidgetProvider)
+        has_widget = False
+        for s in strings:
+            if "appwidget_update" in s.lower() or "appwidgetprovider" in s.lower() or "bind_appwidget" in s.lower():
+                has_widget = True
+                break
+        if not has_widget:
+            # Also check decoded manifest text directly
+            for enc in ["utf-16le", "utf-8", "latin1"]:
+                try:
+                    txt = raw_manifest.decode(enc, errors="ignore").lower()
+                    if "appwidget_update" in txt or "widget_update" in txt or "appwidget" in txt:
+                        has_widget = True
+                        break
+                except Exception:
+                    pass
+
+        result["metadata"]["has_widget"] = has_widget
         result["metadata"]["activities_count"] = max(activities, 1)
         result["metadata"]["services_count"] = services
         result["metadata"]["receivers_count"] = receivers
@@ -387,8 +405,7 @@ class APKFeatureExtractor:
         num_providers = metadata.get("providers_count", 0)
         num_permissions = len(permissions)
         has_internet = 1.0 if metadata.get("has_internet", False) else 0.0
-        has_device_admin = 1.0 if metadata.get("has_device_admin", False) else 0.0
-        app_size_kb = metadata.get("app_size_kb", 2048)
+        has_widget = 1.0 if metadata.get("has_widget", False) else 0.0
 
         vector[350] = float(min_sdk) / 34.0
         vector[351] = float(target_sdk) / 34.0
@@ -399,7 +416,7 @@ class APKFeatureExtractor:
         vector[356] = min(float(num_permissions) / 50.0, 1.0)
         vector[357] = has_internet
         vector[358] = has_device_admin
-        vector[359] = min(float(app_size_kb) / 10000.0, 1.0)
+        vector[359] = has_widget
 
         return vector
 

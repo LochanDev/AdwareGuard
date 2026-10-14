@@ -1,7 +1,9 @@
 import { ScanResult, RiskPermission } from "../types";
 
-// High-risk permissions mapped to known weights
-const HIGH_RISK_PERMS: Record<string, { weight: number; risk: "HIGH" | "MEDIUM" | "LOW" }> = {
+type Level = "HIGH" | "MEDIUM" | "LOW";
+type Verdict = "BENIGN" | "ADWARE" | "MALWARE";
+
+const HIGH_RISK_PERMS: Record<string, { weight: number; risk: Level }> = {
   SYSTEM_ALERT_WINDOW: { weight: 0.96, risk: "HIGH" },
   READ_PHONE_STATE: { weight: 0.91, risk: "HIGH" },
   RECEIVE_BOOT_COMPLETED: { weight: 0.88, risk: "HIGH" },
@@ -23,275 +25,210 @@ const HIGH_RISK_PERMS: Record<string, { weight: number; risk: "HIGH" | "MEDIUM" 
   FLASHLIGHT: { weight: 0.15, risk: "LOW" },
 };
 
-const AD_SIGNATURES: Record<string, string> = {
-  "com/airpush": "Airpush Aggressive Adware",
-  "com/startapp": "StartApp In-App Ads",
-  "com/google/android/gms/ads": "Google Mobile Ads (AdMob)",
-  "com/applovin": "AppLovin Advertising SDK",
-  "com/unity3d/ads": "Unity Ads Network",
-  "com/inmobi": "InMobi Advertising Platform",
-  "com/mopub": "MoPub Ad Server",
-  "com/ironsource": "ironSource Mediation Platform",
-  "com/adcolony": "AdColony SDK",
-  "com/vungle": "Vungle Video Ad SDK",
-};
-
-const SUSPICIOUS_API_PATTERNS: Array<{ pattern: string; desc: string }> = [
-  { pattern: "WindowManager.*addView", desc: "WindowManager.addView (Screen Overlay / Phishing Risk)" },
-  { pattern: "getDeviceId", desc: "TelephonyManager.getDeviceId (IMEI/Device Fingerprinting)" },
-  { pattern: "getSubscriberId", desc: "TelephonyManager.getSubscriberId (IMSI Exfiltration)" },
-  { pattern: "setJavaScriptEnabled", desc: "WebSettings.setJavaScriptEnabled (Ad Fraud / Web View XSS)" },
-  { pattern: "startForeground", desc: "Service.startForeground (Persistent Adware Worker)" },
-  { pattern: "Runtime.*exec", desc: "Runtime.exec (Shell Command Execution)" },
-  { pattern: "DexClassLoader", desc: "DexClassLoader (Dynamic Code Loading / Dropper)" },
-  { pattern: "sendTextMessage", desc: "SmsManager.sendTextMessage (Premium SMS Fraud)" },
-  { pattern: "lockNow", desc: "DevicePolicyManager.lockNow (Device Lockout Mechanism)" },
+const AD_SIGNATURES: Array<[string, string]> = [
+  ["com/airpush", "Airpush Aggressive Adware"],
+  ["com/startapp", "StartApp In-App Ads"],
+  ["com/google/android/gms/ads", "Google Mobile Ads (AdMob)"],
+  ["com/applovin", "AppLovin Advertising SDK"],
+  ["com/unity3d/ads", "Unity Ads Network"],
+  ["com/inmobi", "InMobi Advertising Platform"],
+  ["com/mopub", "MoPub Ad Server"],
+  ["com/ironsource", "ironSource Mediation Platform"],
+  ["com/adcolony", "AdColony SDK"],
+  ["com/vungle", "Vungle Video Ad SDK"],
 ];
 
-// Known verified publishers for legitimate baseline calibration (e.g. Microsoft Office suite, Google, Adobe)
+// Regexes are compiled once. Bounded gaps avoid slow scans on large files.
+const API_PATTERNS: Array<{ re: RegExp; desc: string }> = [
+  { re: /WindowManager[\s\S]{0,80}addView/i, desc: "WindowManager.addView (Screen Overlay / Phishing Risk)" },
+  { re: /getDeviceId/i, desc: "TelephonyManager.getDeviceId (IMEI/Device Fingerprinting)" },
+  { re: /getSubscriberId/i, desc: "TelephonyManager.getSubscriberId (IMSI Exfiltration)" },
+  { re: /setJavaScriptEnabled/i, desc: "WebSettings.setJavaScriptEnabled (Ad Fraud / Web View XSS)" },
+  { re: /startForeground/i, desc: "Service.startForeground (Persistent Adware Worker)" },
+  { re: /Runtime[\s\S]{0,40}exec/i, desc: "Runtime.exec (Shell Command Execution)" },
+  { re: /DexClassLoader/i, desc: "DexClassLoader (Dynamic Code Loading / Dropper)" },
+  { re: /sendTextMessage/i, desc: "SmsManager.sendTextMessage (Premium SMS Fraud)" },
+  { re: /lockNow/i, desc: "DevicePolicyManager.lockNow (Device Lockout Mechanism)" },
+];
+
+const API_LOCKNOW = "DevicePolicyManager.lockNow (Device Lockout Mechanism)";
+const API_SMS = "SmsManager.sendTextMessage (Premium SMS Fraud)";
+const API_DEXLOADER = "DexClassLoader (Dynamic Code Loading / Dropper)";
+const API_IMSI = "TelephonyManager.getSubscriberId (IMSI Exfiltration)";
+const API_IMEI = "TelephonyManager.getDeviceId (IMEI/Device Fingerprinting)";
+
+const TRUSTED_PREFIXES = [
+  "com.microsoft.", "com.google.", "com.adobe.", "com.facebook.", "com.whatsapp",
+  "com.instagram.", "org.telegram.", "com.spotify.", "com.amazon.", "com.dropbox.",
+  "com.slack", "us.zoom.", "org.mozilla.", "com.apple.", "com.samsung.", "com.linkedin.",
+];
+const TRUSTED_FILE_HINTS = ["word", "excel", "powerpoint", "office", "acrobat", "teams", "outlook", "drive"];
+const TRUSTED_PKG_HINTS = ["microsoft", "office", "google", "adobe", "word", "android"];
+
+const IGNORED_PKG_PREFIXES = [
+  "com.facebook.react", "com.facebook.jni", "com.google.android", "androidx.",
+  "android.support", "android.arch", "kotlin.", "kotlinx.", "com.google.gson",
+  "okhttp3.", "retrofit2.", "io.reactivex", "com.squareup",
+];
+
 function isKnownLegitimatePublisher(packageName: string, fileName: string): boolean {
-  const lowerPkg = packageName.toLowerCase();
-  const lowerFile = fileName.toLowerCase();
+  const pkg = packageName.toLowerCase();
+  const file = fileName.toLowerCase();
+  if (TRUSTED_PREFIXES.some((p) => pkg.startsWith(p))) return true;
+  return (
+    TRUSTED_FILE_HINTS.some((h) => file.includes(h)) &&
+    TRUSTED_PKG_HINTS.some((h) => pkg.includes(h))
+  );
+}
 
-  const trustedPrefixes = [
-    "com.microsoft.",
-    "com.google.",
-    "com.adobe.",
-    "com.facebook.",
-    "com.whatsapp",
-    "com.instagram.",
-    "org.telegram.",
-    "com.spotify.",
-    "com.amazon.",
-    "com.dropbox.",
-    "com.slack",
-    "us.zoom.",
-    "org.mozilla.",
-    "com.apple.",
-    "com.samsung.",
-    "com.linkedin."
-  ];
+function extractPackageName(scan: string, fileName: string): string {
+  const base = fileName.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9._]/g, ".");
+  const fallback = base.includes(".") ? base : `com.app.${base.toLowerCase()}`;
 
-  if (trustedPrefixes.some(prefix => lowerPkg.startsWith(prefix))) {
-    return true;
-  }
+  const manifest = scan.match(/package="([a-zA-Z0-9_.]+)"/);
+  if (manifest?.[1]) return manifest[1];
 
-  if (
-    lowerFile.includes("word") ||
-    lowerFile.includes("excel") ||
-    lowerFile.includes("powerpoint") ||
-    lowerFile.includes("office") ||
-    lowerFile.includes("acrobat") ||
-    lowerFile.includes("teams") ||
-    lowerFile.includes("outlook") ||
-    lowerFile.includes("drive")
-  ) {
+  const re = /[a-z][a-z0-9_]*\.[a-z][a-z0-9_]+(?:\.[a-z][a-z0-9_]+)+/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(scan)) !== null) {
+    const cand = m[0];
+    const lower = cand.toLowerCase();
     if (
-      lowerPkg.includes("microsoft") ||
-      lowerPkg.includes("office") ||
-      lowerPkg.includes("google") ||
-      lowerPkg.includes("adobe") ||
-      lowerPkg.includes("word") ||
-      lowerPkg.includes("android")
+      !IGNORED_PKG_PREFIXES.some((p) => lower.startsWith(p)) &&
+      !lower.endsWith(".java") &&
+      !lower.endsWith(".class")
     ) {
-      return true;
+      return cand;
     }
   }
-
-  return false;
+  return fallback;
 }
 
 export async function analyzeApkClientSide(file: File): Promise<ScanResult> {
-  const sliceSize = Math.min(file.size, 15 * 1024 * 1024); // read up to 15MB
-  const buffer = await file.slice(0, sliceSize).arrayBuffer();
-  const bytes = new Uint8Array(buffer);
+  const buffer = await file.slice(0, Math.min(file.size, 15 * 1024 * 1024)).arrayBuffer();
 
-  // Convert to latin1 string for fast regex scanning
-  let contentStr = "";
-  const chunkSize = 65536;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
-    contentStr += String.fromCharCode.apply(null, chunk as any);
-  }
+  // Fast single-pass decode. Stripping NULs makes UTF-16 manifest strings
+  // searchable the same way as ASCII, so no separate UTF-16 matching is needed.
+  const scan = new TextDecoder("latin1").decode(buffer).replace(/\0/g, "");
 
-  // 1. Extract Package Name
-  const cleanBaseName = file.name.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9._]/g, ".");
-  let packageName = cleanBaseName.includes(".") ? cleanBaseName : `com.app.${cleanBaseName.toLowerCase()}`;
+  // 1. Package name
+  const packageName = extractPackageName(scan, file.name);
 
-  // Look for manifest package attribute first
-  const pkgMatch = contentStr.match(/package="([a-zA-Z0-9_.]+)"/);
-  if (pkgMatch && pkgMatch[1]) {
-    packageName = pkgMatch[1];
-  } else {
-    // Search for package-style tokens in strings, filtering out common runtime library namespaces
-    const candidates = contentStr.match(/([a-z][a-z0-9_]*\.[a-z][a-z0-9_]+(?:\.[a-z][a-z0-9_]+)+)/gi) || [];
-    const ignoredPrefixes = [
-      "com.facebook.react", "com.facebook.jni", "com.google.android", "androidx.",
-      "android.support", "android.arch", "kotlin.", "kotlinx.", "com.google.gson",
-      "okhttp3.", "retrofit2.", "io.reactivex", "com.squareup"
-    ];
-    for (const cand of candidates) {
-      const lower = cand.toLowerCase();
-      if (!ignoredPrefixes.some(p => lower.startsWith(p)) && !cand.endsWith(".java") && !cand.endsWith(".class")) {
-        packageName = cand;
-        break;
-      }
-    }
-  }
-
-  // 2. Extract Permissions (strictly matching android.permission namespace)
+  // 2. Permissions
   const foundPerms = new Set<string>();
-  const permRegex = /android\.permission\.([A-Z0-9_]+)/g;
-  let match: RegExpExecArray | null;
-  while ((match = permRegex.exec(contentStr)) !== null) {
-    foundPerms.add(match[1]);
-  }
-
+  for (const m of scan.matchAll(/android\.permission\.([A-Z0-9_]+)/g)) foundPerms.add(m[1]);
   if (foundPerms.size === 0) {
-    // Default sensible permissions if stripped/obfuscated
     foundPerms.add("INTERNET");
     foundPerms.add("ACCESS_NETWORK_STATE");
   }
 
-  // 3. Scan Ad SDKs
+  // 3. Ad SDKs
   const detectedAdSdks = new Set<string>();
-  for (const [sig, name] of Object.entries(AD_SIGNATURES)) {
-    if (contentStr.includes(sig) || contentStr.includes(sig.replace(/\//g, "."))) {
-      detectedAdSdks.add(name);
-    }
+  for (const [sig, name] of AD_SIGNATURES) {
+    if (scan.includes(sig) || scan.includes(sig.replace(/\//g, "."))) detectedAdSdks.add(name);
   }
 
-  // 4. Scan Suspicious APIs
+  // 4. Suspicious APIs
   const detectedApis = new Set<string>();
-  for (const item of SUSPICIOUS_API_PATTERNS) {
-    const r = new RegExp(item.pattern, "i");
-    if (r.test(contentStr)) {
-      detectedApis.add(item.desc);
-    }
-  }
+  for (const { re, desc } of API_PATTERNS) if (re.test(scan)) detectedApis.add(desc);
 
-  // 5. Score risk permissions
-  const riskPermissions: RiskPermission[] = [];
-  let highCount = 0;
-  let mediumCount = 0;
-  let lowCount = 0;
-
-  for (const perm of Array.from(foundPerms)) {
-    const meta = HIGH_RISK_PERMS[perm] || { weight: 0.15, risk: "LOW" as const };
-    if (meta.risk === "HIGH") highCount++;
-    else if (meta.risk === "MEDIUM") mediumCount++;
-    else lowCount++;
-
-    riskPermissions.push({
-      name: perm,
-      weight: meta.weight,
-      risk: meta.risk,
-      percentage: Math.round(meta.weight * 100),
-    });
-  }
-
-  riskPermissions.sort((a, b) => b.weight - a.weight);
-
-  // Trusted publisher verification
+  // 5. Helpers
+  const has = (p: string) => foundPerms.has(p);
+  const hasApi = (d: string) => detectedApis.has(d);
   const isTrustedVendor = isKnownLegitimatePublisher(packageName, file.name);
 
-  // 6. Classification logic
+  // 6. Scoring
   let adwareScore = 0;
   let malwareScore = 0;
 
-  if (foundPerms.has("SYSTEM_ALERT_WINDOW") && foundPerms.has("RECEIVE_BOOT_COMPLETED") && detectedAdSdks.size >= 1) {
-    adwareScore += 35;
-  }
+  if (has("SYSTEM_ALERT_WINDOW") && has("RECEIVE_BOOT_COMPLETED") && detectedAdSdks.size >= 1) adwareScore += 35;
   if (detectedAdSdks.size >= 2) adwareScore += 25;
-  if (detectedAdSdks.has("Airpush Aggressive Adware") || detectedAdSdks.has("StartApp In-App Ads")) {
-    adwareScore += 40;
-  }
+  if (detectedAdSdks.has("Airpush Aggressive Adware") || detectedAdSdks.has("StartApp In-App Ads")) adwareScore += 40;
 
-  if (foundPerms.has("BIND_DEVICE_ADMIN") && detectedApis.has("DevicePolicyManager.lockNow (Device Lockout Mechanism)")) {
-    malwareScore += 95;
-  } else if (foundPerms.has("BIND_DEVICE_ADMIN")) {
-    malwareScore += 65;
-  }
+  if (has("BIND_DEVICE_ADMIN")) malwareScore += hasApi(API_LOCKNOW) ? 95 : 65;
+  if (has("SEND_SMS")) malwareScore += hasApi(API_SMS) ? 90 : 60;
+  if (has("INSTALL_PACKAGES") || has("DELETE_PACKAGES")) malwareScore += 65;
+  if (
+    hasApi(API_DEXLOADER) &&
+    ["SEND_SMS", "BIND_DEVICE_ADMIN", "INSTALL_PACKAGES", "REQUEST_INSTALL_PACKAGES"].some(has)
+  ) malwareScore += 75;
 
-  if (foundPerms.has("SEND_SMS") && detectedApis.has("SmsManager.sendTextMessage (Premium SMS Fraud)")) {
-    malwareScore += 90;
-  } else if (foundPerms.has("SEND_SMS")) {
-    malwareScore += 60;
-  }
-
-  if (foundPerms.has("INSTALL_PACKAGES") || foundPerms.has("DELETE_PACKAGES")) {
-    malwareScore += 65;
-  }
-
-  if (detectedApis.has("DexClassLoader (Dynamic Code Loading / Dropper)")) {
-    if (foundPerms.has("SEND_SMS") || foundPerms.has("BIND_DEVICE_ADMIN") || foundPerms.has("INSTALL_PACKAGES") || foundPerms.has("REQUEST_INSTALL_PACKAGES")) {
-      malwareScore += 75;
-    }
-  }
-
-  // Spyware / surveillance check
   const spyPermsCount = [
-    foundPerms.has("READ_CONTACTS"),
-    foundPerms.has("READ_SMS") || foundPerms.has("RECEIVE_SMS"),
-    foundPerms.has("RECORD_AUDIO"),
-    foundPerms.has("READ_CALL_LOG"),
-    foundPerms.has("ACCESS_FINE_LOCATION"),
-    foundPerms.has("READ_PHONE_STATE"),
+    has("READ_CONTACTS"),
+    has("READ_SMS") || has("RECEIVE_SMS"),
+    has("RECORD_AUDIO"),
+    has("READ_CALL_LOG"),
+    has("ACCESS_FINE_LOCATION"),
+    has("READ_PHONE_STATE"),
   ].filter(Boolean).length;
-
-  if (spyPermsCount >= 3 && (detectedApis.has("TelephonyManager.getSubscriberId (IMSI Exfiltration)") || detectedApis.has("TelephonyManager.getDeviceId (IMEI/Device Fingerprinting)"))) {
-    malwareScore += 70;
-  } else if (spyPermsCount >= 4) {
-    malwareScore += 60;
-  }
+  const hasIdApi = hasApi(API_IMSI) || hasApi(API_IMEI);
+  if (spyPermsCount >= 3 && hasIdApi) malwareScore += 70;
+  else if (spyPermsCount >= 4) malwareScore += 60;
 
   if (isTrustedVendor) {
     malwareScore = Math.max(0, malwareScore - 60);
     adwareScore = Math.max(0, adwareScore - 50);
   }
 
-  let verdict: "BENIGN" | "ADWARE" | "MALWARE" = "BENIGN";
-  let confidence = 96.0;
-  let riskLevel: "SAFE" | "HIGH" | "CRITICAL" = "SAFE";
-  let probabilities = { Benign: 97.2, Adware: 1.8, Malware: 1.0 };
+  // 7. Widget + boot combo (APPWIDGET_UPDATE + RECEIVE_BOOT_COMPLETED => benign boot use)
+  const hasWidget = scan.includes("APPWIDGET_UPDATE") || scan.toLowerCase().includes("widget_update") || scan.toLowerCase().includes("appwidget");
+  const hasBoot = has("RECEIVE_BOOT_COMPLETED");
+  const widgetBootCombo = hasWidget && hasBoot;
 
-  if (malwareScore >= 50) {
-    verdict = "MALWARE";
-    confidence = Math.min(99.2, +(86 + malwareScore * 0.12).toFixed(1));
-    riskLevel = "CRITICAL";
-    const rem = Math.max(0, +(100 - confidence).toFixed(1));
-    const pAd = Math.min(+(rem * 0.6).toFixed(1), rem);
-    const pBen = Math.max(0, +(rem - pAd).toFixed(1));
-    probabilities = {
-      Benign: pBen,
-      Adware: pAd,
-      Malware: confidence,
-    };
-  } else if (adwareScore >= 35) {
-    verdict = "ADWARE";
-    confidence = Math.min(98.6, +(84 + adwareScore * 0.14).toFixed(1));
-    riskLevel = "HIGH";
-    const rem = Math.max(0, +(100 - confidence).toFixed(1));
-    const pMal = Math.min(+(rem * 0.4).toFixed(1), rem);
-    const pBen = Math.max(0, +(rem - pMal).toFixed(1));
-    probabilities = {
-      Benign: pBen,
-      Adware: confidence,
-      Malware: pMal,
-    };
-  } else {
+  const widgetBootOk = widgetBootCombo && detectedAdSdks.size === 0 && malwareScore < 10;
+
+  // 8. Verdict (single source of truth)
+  let verdict: Verdict =
+    malwareScore >= 50 ? "MALWARE" : adwareScore >= 35 ? "ADWARE" : "BENIGN";
+  
+  // User override: If both Widget_Update and RECEIVE_BOOT_COMPLETED are present, output is always BENIGN
+  if (widgetBootCombo) {
     verdict = "BENIGN";
-    confidence = isTrustedVendor ? 98.6 : Math.min(98.4, +(94.0 + (lowCount * 0.5) - (highCount * 0.4)).toFixed(1));
-    riskLevel = "SAFE";
-    const rem = Math.max(0, +(100 - confidence).toFixed(1));
-    const pAd = Math.min(+(rem * 0.65).toFixed(1), rem);
-    const pMal = Math.max(0, +(rem - pAd).toFixed(1));
-    probabilities = {
-      Benign: confidence,
-      Adware: pAd,
-      Malware: pMal,
-    };
   }
+
+  const riskLevel = ({ MALWARE: "CRITICAL", ADWARE: "HIGH", BENIGN: "SAFE" } as const)[verdict];
+
+  // 9. Permission labels follow the verdict
+  const cap = (name: string, r: Level): Level => {
+    if (verdict !== "BENIGN") return r;
+    if (isTrustedVendor) return "LOW";
+    if (name === "RECEIVE_BOOT_COMPLETED" && widgetBootOk) return "LOW";
+    return r === "HIGH" ? "MEDIUM" : r;
+  };
+
+  const counts: Record<Level, number> = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+  const riskPermissions: RiskPermission[] = Array.from(foundPerms)
+    .map((name) => {
+      const meta = HIGH_RISK_PERMS[name] ?? { weight: 0.15, risk: "LOW" as Level };
+      const risk = cap(name, meta.risk);
+      counts[risk]++;
+      let pct = Math.round(meta.weight * 100);
+      let weight = meta.weight;
+      if (risk === "HIGH") {
+        pct = Math.min(99, Math.max(88, pct));
+        weight = +(pct / 100).toFixed(2);
+      }
+      return { name, weight, risk, percentage: pct };
+    })
+    .sort((a, b) => b.weight - a.weight);
+
+  // 10. Confidence + probabilities (always sum to 100)
+  const base =
+    verdict === "MALWARE" ? 86 + malwareScore * 0.12
+    : verdict === "ADWARE" ? 84 + adwareScore * 0.14
+    : isTrustedVendor ? 98.6
+    : 94 + counts.LOW * 0.5 - counts.MEDIUM * 0.2;
+  const maxConf = verdict === "MALWARE" ? 99.2 : 98.6;
+  const confidence = +Math.min(maxConf, Math.max(60, base)).toFixed(1);
+  const rem = +(100 - confidence).toFixed(1);
+  const part = (ratio: number) => +(rem * ratio).toFixed(1);
+
+  const probabilities =
+    verdict === "MALWARE" ? { Benign: +(rem - part(0.6)).toFixed(1), Adware: part(0.6), Malware: confidence }
+    : verdict === "ADWARE" ? { Benign: +(rem - part(0.4)).toFixed(1), Adware: confidence, Malware: part(0.4) }
+    : { Benign: confidence, Adware: part(0.65), Malware: +(rem - part(0.65)).toFixed(1) };
+
+  const apis = Array.from(detectedApis);
 
   return {
     success: true,
@@ -299,26 +236,21 @@ export async function analyzeApkClientSide(file: File): Promise<ScanResult> {
     package_name: packageName,
     app_size_kb: Math.round(file.size / 1024),
     verdict,
-    confidence: +confidence.toFixed(1),
+    confidence,
     risk_level: riskLevel,
     probabilities,
     feature_summary: {
       total_permissions: foundPerms.size,
-      high_risk_count: highCount,
-      medium_risk_count: mediumCount,
-      low_risk_count: lowCount,
-      api_calls_detected: detectedApis.size,
+      high_risk_count: counts.HIGH,
+      medium_risk_count: counts.MEDIUM,
+      low_risk_count: counts.LOW,
+      api_calls_detected: apis.length,
       ad_sdks_detected: detectedAdSdks.size,
     },
     risk_permissions: riskPermissions.slice(0, 10),
-    suspicious_apis: Array.from(detectedApis).length > 0 ? Array.from(detectedApis) : ["No overt suspicious APIs identified in disassembled bytecode"],
+    suspicious_apis: apis.length ? apis : ["No overt suspicious APIs identified in disassembled bytecode"],
     ad_sdks: Array.from(detectedAdSdks),
     datasets_used: ["CICMalDroid 2020", "CICAndMal2017", "Drebin", "AndroZoo", "MalGenome Project"],
-    model_info: {
-      name: "AdwareGuard Transformer v1.0",
-      accuracy: 96.8,
-      trained_samples: 73109,
-      datasets: 5,
-    },
+    model_info: { name: "AdwareGuard Transformer v1.0", accuracy: 96.8, trained_samples: 73109, datasets: 5 },
   };
 }

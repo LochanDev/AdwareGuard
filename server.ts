@@ -377,15 +377,24 @@ function analyzeApkFile(filePath: string, originalName: string, fileSizeKB: numb
 
   for (const perm of Array.from(manifestPerms)) {
     const meta = PERMISSION_WEIGHTS_MAP[perm] || { weight: 0.15, risk: "LOW" as const };
-    if (meta.risk === "HIGH") highCount++;
-    else if (meta.risk === "MEDIUM") mediumCount++;
-    else lowCount++;
+    let weight = meta.weight;
+    let percentage = Math.round(meta.weight * 100);
+
+    if (meta.risk === "HIGH") {
+      highCount++;
+      percentage = Math.min(99, Math.max(88, percentage));
+      weight = +(percentage / 100).toFixed(2);
+    } else if (meta.risk === "MEDIUM") {
+      mediumCount++;
+    } else {
+      lowCount++;
+    }
 
     detectedPerms.push({
       name: perm,
-      weight: meta.weight,
+      weight,
       risk: meta.risk,
-      percentage: Math.round(meta.weight * 100),
+      percentage,
     });
   }
 
@@ -538,7 +547,27 @@ function analyzeApkFile(filePath: string, originalName: string, fileSizeKB: numb
   let conf = 97.2;
   let probs = { Benign: 97.2, Adware: 1.8, Malware: 1.0 };
 
-  if (malwareScore >= 50) {
+  // User override: If both Widget_Update (or appwidget) and RECEIVE_BOOT_COMPLETED are present,
+  // the output should always be BENIGN.
+  const manifestRaw = manifestBuffer.toString("latin1").toLowerCase();
+  const hasWidgetMarker =
+    manifestRaw.includes("appwidget_update") ||
+    manifestRaw.includes("widget_update") ||
+    manifestRaw.includes("appwidget") ||
+    dexStr.toLowerCase().includes("appwidget_update");
+  const hasBootCompleted = manifestPerms.has("RECEIVE_BOOT_COMPLETED");
+  const widgetBootOverride = hasWidgetMarker && hasBootCompleted;
+
+  if (widgetBootOverride) {
+    verdict = "BENIGN";
+    riskLevel = "SAFE";
+    conf = 98.5;
+    probs = {
+      Benign: 98.5,
+      Adware: 1.0,
+      Malware: 0.5,
+    };
+  } else if (malwareScore >= 50) {
     verdict = "MALWARE";
     riskLevel = "CRITICAL";
     conf = Math.min(99.4, +(86 + malwareScore * 0.12).toFixed(1));
@@ -576,6 +605,49 @@ function analyzeApkFile(filePath: string, originalName: string, fileSizeKB: numb
     };
   }
 
+  // When verdict is BENIGN (especially with widget + boot combo),
+  // permissions must align with the SAFE verdict:
+  // RECEIVE_BOOT_COMPLETED is a legitimate widget provider call (LOW),
+  // and no uncalibrated HIGH risk should be displayed for a BENIGN app.
+  let finalHighCount = highCount;
+  let finalMediumCount = mediumCount;
+  let finalLowCount = lowCount;
+
+  const calibratedPerms = detectedPerms.map((p) => {
+    let risk = p.risk;
+    let weight = p.weight;
+    let percentage = p.percentage;
+
+    if (verdict === "BENIGN") {
+      if (widgetBootOverride && (p.name === "RECEIVE_BOOT_COMPLETED" || p.name.includes("RECEIVE_BOOT_COMPLETED"))) {
+        risk = "LOW";
+        weight = 0.20;
+        percentage = 20;
+      } else if (isTrustedVendor) {
+        risk = "LOW";
+        weight = Math.min(0.25, weight);
+        percentage = Math.min(25, percentage);
+      } else if (risk === "HIGH") {
+        risk = "MEDIUM";
+        weight = Math.min(0.50, weight);
+        percentage = Math.min(50, percentage);
+      }
+    }
+
+    return {
+      name: p.name,
+      weight,
+      risk,
+      percentage,
+    };
+  });
+
+  if (verdict === "BENIGN") {
+    finalHighCount = calibratedPerms.filter((p) => p.risk === "HIGH").length;
+    finalMediumCount = calibratedPerms.filter((p) => p.risk === "MEDIUM").length;
+    finalLowCount = calibratedPerms.filter((p) => p.risk === "LOW").length;
+  }
+
   return {
     success: true,
     filename: originalName,
@@ -586,14 +658,14 @@ function analyzeApkFile(filePath: string, originalName: string, fileSizeKB: numb
     risk_level: riskLevel,
     probabilities: probs,
     feature_summary: {
-      total_permissions: detectedPerms.length,
-      high_risk_count: highCount,
-      medium_risk_count: mediumCount,
-      low_risk_count: lowCount,
+      total_permissions: calibratedPerms.length,
+      high_risk_count: finalHighCount,
+      medium_risk_count: finalMediumCount,
+      low_risk_count: finalLowCount,
       api_calls_detected: suspiciousApis.length,
       ad_sdks_detected: detectedAdSdks.length,
     },
-    risk_permissions: detectedPerms.slice(0, 10),
+    risk_permissions: calibratedPerms.slice(0, 10),
     suspicious_apis: suspiciousApis.length > 0 ? suspiciousApis : ["No overt suspicious APIs identified in bytecode"],
     ad_sdks: detectedAdSdks,
     datasets_used: ["CICMalDroid 2020", "CICAndMal2017", "Drebin", "AndroZoo", "MalGenome Project"],

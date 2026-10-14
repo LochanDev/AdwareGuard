@@ -439,6 +439,21 @@ function analyzeApkFile(filePath, originalName, fileSizeKB) {
     malwareScore += 70;
   } else if (spyPermsCount >= 4) {
     malwareScore += 60;
+  } else if (spyPermsCount >= 2) {
+    malwareScore += 35;
+  }
+  if (manifestPerms.has("SYSTEM_ALERT_WINDOW") && manifestPerms.has("RECEIVE_BOOT_COMPLETED")) {
+    if (manifestPerms.has("READ_PHONE_STATE") || manifestPerms.has("READ_CONTACTS") || manifestPerms.has("ACCESS_FINE_LOCATION")) {
+      adwareScore += 55;
+      malwareScore += 30;
+    } else {
+      adwareScore += 35;
+    }
+  } else if (manifestPerms.has("SYSTEM_ALERT_WINDOW") && manifestPerms.has("READ_PHONE_STATE")) {
+    adwareScore += 30;
+  }
+  if (highCount >= 3 && detectedAdSdks.length === 0 && !isTrustedVendor) {
+    adwareScore += (highCount - 2) * 12;
   }
   if (isTrustedVendor) {
     malwareScore = Math.max(0, malwareScore - 60);

@@ -102,10 +102,15 @@ def scan_apk():
         # 3. Attention-based Explainability per [1] and [5]
         explainability = model.get_feature_importance(
             extracted_data["feature_vector"],
-            extracted_data["permissions"]
+            extracted_data["permissions"],
+            verdict=prediction["verdict"],
+            widget_boot_ok=prediction.get("widget_boot_ok", False),
         )
 
         risk_summary = extracted_data["risk_summary"]
+        high_risk_count = explainability.get("high_risk_count", risk_summary["high_count"])
+        medium_risk_count = explainability.get("medium_risk_count", risk_summary["medium_count"])
+        low_risk_count = explainability.get("low_risk_count", risk_summary["low_count"])
 
         response_data = {
             "success": True,
@@ -118,9 +123,9 @@ def scan_apk():
             "probabilities": prediction["probabilities"],
             "feature_summary": {
                 "total_permissions": risk_summary["total"],
-                "high_risk_count": risk_summary["high_count"],
-                "medium_risk_count": risk_summary["medium_count"],
-                "low_risk_count": risk_summary["low_count"],
+                "high_risk_count": high_risk_count,
+                "medium_risk_count": medium_risk_count,
+                "low_risk_count": low_risk_count,
                 "api_calls_detected": len(extracted_data["detected_apis"]),
                 "ad_sdks_detected": len(extracted_data["ad_sdks"])
             },
